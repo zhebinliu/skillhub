@@ -242,7 +242,10 @@ def _call_openai_compat(prompt_user: str) -> tuple[dict, str]:
 
 def _safe_json(text: str) -> dict:
     text = text.strip()
-    # 兜底剥 markdown 代码块
+    # 剥 reasoning 模型(MiniMax-M*、DeepSeek-R1、QwQ 等)的 <think>...</think> 块
+    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = text.strip()
+    # 剥 markdown 代码块
     if text.startswith("```"):
         text = re.sub(r"^```(?:json)?\s*\n", "", text)
         text = re.sub(r"\n```\s*$", "", text)
