@@ -443,7 +443,8 @@ async def download_skill(
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for f in base.rglob("*"):
             if f.is_file():
-                zf.write(f, arcname=str(f.relative_to(base.parent)))
+                # 顶层目录用 slug 而非 storage_path(UUID),解压更友好
+                zf.write(f, arcname=f"{s.slug}/{f.relative_to(base)}")
     buf.seek(0)
     return StreamingResponse(
         buf,
