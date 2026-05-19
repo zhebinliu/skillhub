@@ -1,11 +1,48 @@
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeHighlight from 'rehype-highlight';
+import hljs from 'highlight.js';
 import 'highlight.js/styles/github-dark.css';
 import { Download, Eye, FileX } from 'lucide-react';
 import { skillsApi } from '../lib/api';
 import { bytes } from '../lib/format';
+
+// 扩展名 → highlight.js 语言
+const HL_LANG: Record<string, string> = {
+  py: 'python', pyi: 'python',
+  js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+  ts: 'typescript', tsx: 'typescript',
+  sh: 'bash', bash: 'bash', zsh: 'bash', fish: 'bash',
+  json: 'json', yaml: 'yaml', yml: 'yaml', toml: 'ini',
+  go: 'go', rs: 'rust', rb: 'ruby', php: 'php',
+  java: 'java', kt: 'kotlin', kts: 'kotlin',
+  c: 'c', h: 'c', cc: 'cpp', cpp: 'cpp', hpp: 'cpp', cxx: 'cpp',
+  swift: 'swift', m: 'objectivec', mm: 'objectivec',
+  lua: 'lua', pl: 'perl', r: 'r', jl: 'julia',
+  html: 'xml', xml: 'xml', svg: 'xml',
+  css: 'css', scss: 'scss', sass: 'scss', less: 'less',
+  sql: 'sql', graphql: 'graphql', gql: 'graphql',
+  ini: 'ini', cfg: 'ini', conf: 'ini',
+  dockerfile: 'dockerfile', makefile: 'makefile',
+  vue: 'xml', astro: 'xml',
+};
+
+const FILENAME_LANG: Record<string, string> = {
+  dockerfile: 'dockerfile',
+  makefile: 'makefile',
+  gemfile: 'ruby',
+  rakefile: 'ruby',
+};
+
+function guessLang(path: string): string | null {
+  const name = path.split('/').pop()!.toLowerCase();
+  if (FILENAME_LANG[name]) return FILENAME_LANG[name];
+  const m = name.match(/\.([a-z0-9]+)$/);
+  if (m && HL_LANG[m[1]]) return HL_LANG[m[1]];
+  return null;
+}
 
 const IMG_EXT = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'avif', 'bmp', 'ico']);
 const PDF_EXT = new Set(['pdf']);
@@ -164,9 +201,7 @@ export default function FilePreview({ skillId, path }: { skillId: string; path: 
               </ReactMarkdown>
             </div>
           ) : (
-            <pre className="px-5 py-4 text-xs font-mono text-zinc-200 whitespace-pre">
-              <code>{data.text}</code>
-            </pre>
+            <CodeBlock path={path} text={data.text} />
           )
         ) : (
           <div className="p-6 text-zinc-500 text-sm">
@@ -176,6 +211,59 @@ export default function FilePreview({ skillId, path }: { skillId: string; path: 
       </div>
     </PreviewFrame>
   );
+}
+
+function CodeBlock({ path, text }: { path: string; text: string }) {
+  const lang = guessLang(path);
+
+  // 行号 + 高亮的代码 HTML
+  const html = useMemo(() => {
+    let inner = '';
+    if (lang) {
+      try {
+        inner = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+      } catch {
+        inner = escapeHtml(text);
+      }
+    } else {
+      // 没识别出语言:尝试 auto-detect,失败就 escape
+      try {
+        inner = hljs.highlightAuto(text).value;
+      } catch {
+        inner = escapeHtml(text);
+      }
+    }
+    return inner;
+  }, [text, lang]);
+
+  const lineCount = text.split('\n').length;
+  const lineNumbers = useMemo(
+    () => Array.from({ length: lineCount }, (_, i) => i + 1).join('\n'),
+    [lineCount]
+  );
+
+  return (
+    <div className="flex text-xs font-mono leading-[1.6]">
+      <pre className="select-none text-right text-zinc-600 px-3 py-4 border-r border-white/[0.04] bg-white/[0.02]">
+        {lineNumbers}
+      </pre>
+      <pre className="flex-1 overflow-x-auto px-4 py-4 text-zinc-200">
+        <code
+          className={`hljs language-${lang || 'plaintext'}`}
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      </pre>
+    </div>
+  );
+}
+
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 function PreviewFrame({

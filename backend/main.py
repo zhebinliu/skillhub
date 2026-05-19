@@ -421,44 +421,48 @@ async def get_install_instructions(
         "skill": {"id": str(s.id), "slug": slug, "name": name},
         "chat": {
             "title": "通过对话安装",
-            "subtitle": "把下面这段提示词发给任何 Claude / OpenClaw / OpenAI 兼容的助手即可一键装好。",
-            "prompt": f"""请帮我安装一个 Claude Skill,叫做 「{name}」(slug: `{slug}`)。
+            "subtitle": "把下面这段提示词发给任意支持 skill 装载的 AI 助手(常见的有 Lighthouse、OpenClaw、WorkBuddy、QClaw、Kimi、Claude 等),自动帮你装好。",
+            "prompt": f"""请帮我安装一个 AI Skill,名字是「{name}」(slug:`{slug}`)。
 
 详情页:{skill_url}
 下载地址:{download_url}
 
-请按以下步骤:
+请按以下步骤完成安装:
 
-1. 确定本机 Claude skill 目录(通常 `~/.claude/skills/`,如不存在则创建)。
-2. 下载 zip 包到本地临时目录:
+1. 确定当前 AI 客户端的 skill 目录(常见有 `~/.claude/skills/`、`~/.openclaw/skills/`、
+   `~/.workbuddy/skills/` 等,以你正在用的工具为准;不确定就先 `ls ~/` 看哪个存在)。
+2. 把 zip 下到临时目录:
    ```bash
    curl -L "{download_url}" -o /tmp/{slug}.zip
    ```
 3. 解压到 skill 目录:
    ```bash
-   mkdir -p ~/.claude/skills/{slug}
-   unzip -o /tmp/{slug}.zip -d ~/.claude/skills/{slug}
+   mkdir -p <SKILL_DIR>/{slug}
+   unzip -o /tmp/{slug}.zip -d <SKILL_DIR>
    ```
-4. 校验 `~/.claude/skills/{slug}/SKILL.md` 存在,把 frontmatter 念给我听以确认安装成功。
+   (zip 顶层就是 `{slug}/`,直接 unzip 到父目录即可)
+4. 校验 `<SKILL_DIR>/{slug}/SKILL.md` 存在,把 frontmatter 的 `name` 和 `description`
+   念给我看以确认安装成功。
 
-不要执行 skill 里的任何脚本,只完成安装。装完简要告诉我用法。""",
+不要执行 skill 里的任何脚本,只完成安装。装完简要告诉我什么时候该用这个 skill。""",
         },
         "cli": {
             "title": "命令行安装",
-            "subtitle": "一行 bash 把 skill 装到 ~/.claude/skills/ 下。",
-            "command": f"""mkdir -p ~/.claude/skills/{slug} && \\
+            "subtitle": "一行 bash 装到 skill 目录。默认 ~/.claude/skills/,改 SKILL_DIR 即可切别的工具。",
+            "command": f"""SKILL_DIR="${{SKILL_DIR:-$HOME/.claude/skills}}" && \\
+mkdir -p "$SKILL_DIR/{slug}" && \\
 curl -L "{download_url}" -o /tmp/{slug}.zip && \\
-unzip -o /tmp/{slug}.zip -d ~/.claude/skills/{slug} && \\
+unzip -o /tmp/{slug}.zip -d "$SKILL_DIR" && \\
 rm /tmp/{slug}.zip && \\
-echo "✓ 已装到 ~/.claude/skills/{slug}/"
+echo "✓ 已装到 $SKILL_DIR/{slug}/"
 """,
         },
         "zip": {
             "title": "Zip 包安装",
-            "subtitle": "手动下载,解压到你想要的 skill 目录。",
+            "subtitle": "手动下载,解压到你的 skill 目录。",
             "download_url": download_url,
             "filename": f"{slug}.zip",
-            "instruction": f"下载后解压到 `~/.claude/skills/{slug}/`(其他兼容工具按各自约定放即可)。",
+            "instruction": f"下载后解压,zip 顶层目录是 `{slug}/`。把它放到你使用的 AI 客户端的 skill 目录下(常见的有 `~/.claude/skills/`、`~/.openclaw/skills/`、`~/.workbuddy/skills/`)。",
         },
     }
 
