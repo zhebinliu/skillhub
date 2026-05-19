@@ -1,0 +1,99 @@
+# skillhub — 独立部署 (与 kb-system / 其他服务无依赖)
+#
+# 用法:
+#   1. cp .env.example .env，按需改值
+#   2. docker compose up -d
+#   3. 首次启动会自动建 admin 账号 + 第一条邀请码,看 backend 日志
+#
+# 反代 + SSL:
+#   - 单独跑(独立 443 持有者):打开下面 standalone-frontend 注释,需要 80/443 端口空闲
+#   - 嵌入到已有 nginx:不动 standalone-frontend,backend/frontend 只对内网暴露 :8001/:80,
+#     由外部 nginx 反代到 skillhub-backend:8001 / skillhub-frontend:80
+#
+# 数据持久化:
+#   - postgres_data: skillhub 关系数据
+#   - skill_files:   解包后的 skill 文件
+networks:
+  default:
+    name: ${COMPOSE_NETWORK:-skillhub_default}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    mem_limit: 256m
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-skillhub}
+      POSTGRES_USER: ${POSTGRES_USER:-skillhub}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?需在 .env 设置}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-skillhub} -d $${POSTGRES_DB:-skillhub}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    image: skillhub-backend:latest
+    container_name: skillhub-backend
+    mem_limit: 384m
+    env_file: .env
+    environment:
+      SKILLHUB_DB_HOST: ${SKILLHUB_DB_HOST:-postgres}
+      SKILLHUB_DB_PORT: ${SKILLHUB_DB_PORT:-5432}
+      SKILLHUB_DB_USER: ${SKILLHUB_DB_USER:-${POSTGRES_USER:-skillhub}}
+      SKILLHUB_DB_PASSWORD: ${SKILLHUB_DB_PASSWORD:-${POSTGRES_PASSWORD}}
+      SKILLHUB_DB_NAME: ${SKILLHUB_DB_NAME:-${POSTGRES_DB:-skillhub}}
+    expose:
+      - "8001"
+    volumes:
+      - skill_files:/data/skillhub
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    dns_opt:
+      - ndots:5
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8001/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  frontend:
+    build: ./frontend
+    image: skillhub-frontend:latest
+    container_name: skillhub-frontend
+    mem_limit: 128m
+    expose:
+      - "80"
+    depends_on:
+      backend:
+        condition: service_started
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # 可选独立 443 入口(默认注释,生产用外部 nginx 反代更灵活)
+  #
+  # standalone-frontend:
+  #   image: nginx:1.27-alpine
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - /etc/letsencrypt:/etc/letsencrypt:ro
+  #     - ./deploy/nginx-standalone.conf:/etc/nginx/conf.d/default.conf:ro
+  #   depends_on:
+  #     - frontend
+  #     - backend
+
+volumes:
+  postgres_data:
+  skill_files:
