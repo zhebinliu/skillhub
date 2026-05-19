@@ -1,29 +1,34 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Settings, Eye } from 'lucide-react';
+import { ArrowLeft, Download, Eye, GaugeCircle, Layers, Package, Settings } from 'lucide-react';
 import { skillsApi } from '../lib/api';
-import FileTree from '../components/FileTree';
-import FilePreview from '../components/FilePreview';
+import OverviewTab from '../components/OverviewTab';
+import InstallTab from '../components/InstallTab';
+import VersionsTab from '../components/VersionsTab';
+import ReportTab from '../components/ReportTab';
 import { useAuth } from '../lib/auth';
 import { bytes, relTime, verdictMeta } from '../lib/format';
+
+type Tab = 'overview' | 'install' | 'versions' | 'report';
+
+const TABS: { key: Tab; icon: any; label: string }[] = [
+  { key: 'overview', icon: Layers,       label: '概述' },
+  { key: 'install',  icon: Package,      label: '安装方式' },
+  { key: 'versions', icon: Download,     label: '版本历史' },
+  { key: 'report',   icon: GaugeCircle,  label: '评测报告' },
+];
 
 export default function SkillDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
-  const [selected, setSelected] = useState<string | null>(null);
+  const [tab, setTab] = useState<Tab>('overview');
 
   const { data, error, isLoading } = useQuery({
     queryKey: ['skill', id],
     queryFn: () => skillsApi.get(id!),
     enabled: !!id,
   });
-
-  useEffect(() => {
-    if (data && !selected) {
-      setSelected(data.skill.entry_file || data.tree[0]?.path || null);
-    }
-  }, [data]); // eslint-disable-line
 
   if (isLoading) return <div className="p-12 text-center text-zinc-500">加载中…</div>;
   if (error || !data) {
@@ -40,15 +45,15 @@ export default function SkillDetailPage() {
 
   return (
     <div className="mx-auto max-w-7xl px-6 py-8">
-      {/* 头 */}
-      <div className="mb-6">
-        <Link to="/explore" className="text-xs text-zinc-500 hover:text-zinc-300 inline-flex items-center gap-1 mb-3">
-          <ArrowLeft className="h-3 w-3" />
-          回到广场
-        </Link>
+      <Link to="/explore" className="text-xs text-zinc-500 hover:text-zinc-300 inline-flex items-center gap-1 mb-3">
+        <ArrowLeft className="h-3 w-3" />
+        回到广场
+      </Link>
 
+      {/* 头部 */}
+      <div className="mb-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="text-3xl font-bold heading-display tracking-tight">{s.name}</h1>
             <div className="text-sm text-zinc-500 mt-1 font-mono">
               {s.owner_display_name || s.owner_username} <span className="text-zinc-700 mx-1">/</span> {s.slug}
@@ -61,7 +66,8 @@ export default function SkillDetailPage() {
           <div className="flex items-center gap-2 shrink-0">
             {s.latest_score != null && (
               <div className={`px-3 py-1.5 rounded-full text-sm ring-1 ${v.bg} ${v.color} ${v.ring}`}>
-                <span className="font-mono">{s.latest_score}</span>
+                <span className="font-mono">{(s.latest_score / 20).toFixed(1)}</span>
+                <span className="text-xs opacity-70">/5</span>
                 <span className="text-xs opacity-70 ml-1.5">{v.label}</span>
               </div>
             )}
@@ -97,15 +103,32 @@ export default function SkillDetailPage() {
         </div>
       </div>
 
-      {/* 工作区 */}
-      <div className="grid grid-cols-12 gap-4 min-h-[70vh]">
-        <aside className="col-span-12 md:col-span-3 surface p-3 overflow-auto max-h-[80vh]">
-          <div className="label px-2 py-2 mb-1">文件结构</div>
-          <FileTree files={data.tree} selected={selected ?? undefined} onSelect={setSelected} />
-        </aside>
-        <section className="col-span-12 md:col-span-9 surface overflow-hidden">
-          <FilePreview skillId={s.id} path={selected} />
-        </section>
+      {/* tab 切换 */}
+      <div className="border-b border-white/[0.06] mb-6">
+        <div className="flex gap-1 -mb-px overflow-x-auto">
+          {TABS.map(({ key, icon: Icon, label }) => (
+            <button
+              key={key}
+              onClick={() => setTab(key)}
+              className={`inline-flex items-center gap-2 px-4 py-3 text-sm border-b-2 transition-all whitespace-nowrap ${
+                tab === key
+                  ? 'border-iris-400 text-white'
+                  : 'border-transparent text-zinc-400 hover:text-zinc-100'
+              }`}
+            >
+              <Icon className="h-4 w-4" />
+              {label}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* tab 内容 */}
+      <div>
+        {tab === 'overview' && <OverviewTab skillId={s.id} skill={s} tree={data.tree} />}
+        {tab === 'install'  && <InstallTab skillId={s.id} />}
+        {tab === 'versions' && <VersionsTab skillId={s.id} />}
+        {tab === 'report'   && <ReportTab skillId={s.id} isOwner={isOwner} />}
       </div>
     </div>
   );

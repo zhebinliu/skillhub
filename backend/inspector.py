@@ -1,4 +1,17 @@
-"""Skill 质检:静态规则 + LLM 评分。"""
+"""TRACE 5 维 LLM 评测 + 静态线索补充。
+
+维度(各 0-20,总分 0-100):
+  T (Trust)         信任性  — 来源透明度 / 安全风险 / 引用真实可验证 / 无 prompt 注入
+  R (Reliability)   可靠性  — 步骤幂等 / 错误处理 / 边界 case / 失败 fallback
+  A (Adaptability)  适用性  — 触发场景清晰 / 边界明确 / 多 case 覆盖
+  C (Convention)    规范性  — frontmatter / 命名 / 文件结构 / 文档完整
+  E (Effectiveness) 有效性  — 用户读完能否上手 / 步骤可执行 / 实际效果
+
+评级 = 综合分 ÷ 20 → 1..5 星(支持 0.5 半星显示)。
+
+静态层(`trace_clues.py` 提供):格式检查 + 文件统计 + 安全启发,作为给 LLM 的「线索」附在 prompt 里。
+不直接打分,避免静态规则压住 LLM 的真实评估。
+"""
 import json
 import re
 import time
@@ -6,133 +19,170 @@ from pathlib import Path
 from typing import Optional
 
 import httpx
-import yaml
 
 from config import settings
 from storage import skill_dir, list_tree
 
 
-SYSTEM_PROMPT = """你是一个 Claude Code Skill 的资深审稿人。你的任务是审一份用户提交的 skill 包,
-按以下 4 个维度各打 0-25 分(总分 0-100),并给出具体改进建议。
+# ──────────────────────────────────────────────────────────────────────────────
+SYSTEM_PROMPT = """你是 Skill Hub 平台的 TRACE 评测官,负责对用户上传的 Claude Skill 包做质量审查。
 
-【格式合规 0-25】
-- 是否有 SKILL.md;frontmatter 是否完整(name / description / 可选 allowed-tools / model)
-- 文件结构是否干净(没有 .DS_Store / __MACOSX / 大体积无关物)
-- 文件命名是否一致、避免 typo
+【TRACE 5 维度】每项 0-20 分,总分 0-100。
 
-【触发清晰 0-25】
-- description 是否明确"何时该用这个 skill"
-- 是否包含关键触发词、目标场景、能力边界
-- 用户读完是否能立刻判断这个 skill 是不是自己要的
+T · Trust(信任性):
+  - 来源是否透明、可验证
+  - 是否含安全风险(网络下载、shell 注入、敏感词、外链)
+  - 引用 / URL 是否真实
+  - 有无 prompt injection 嫌疑
 
-【内容质量 0-25】
-- 步骤是否具体可执行(不是空话 / 套话)
-- 是否包含示例 / 反例 / 边界 case
-- 是否对 LLM 友好(分点 / 短句 / 明确命令式语气)
+R · Reliability(可靠性):
+  - 步骤是否幂等可重复
+  - 错误处理 / 异常路径覆盖
+  - 边界 case 是否考虑
+  - 失败 fallback 是否到位
 
-【结构组织 0-25】
-- 文件层级是否合理;辅助资料(scripts / references / examples)是否归位
-- 是否有冗余 / 死链 / 自相矛盾
-- 整包是否"开箱即用"
+A · Adaptability(适用性):
+  - 触发场景是否清晰(description 让人能立刻判断要不要用)
+  - 边界 / 不适用场景是否明确
+  - 覆盖多种使用 case
 
-输出严格 JSON,不要加 markdown 代码块标记:
+C · Convention(规范性):
+  - frontmatter 字段完整(name / description / 可选 allowed-tools / model)
+  - 文件命名 / 目录结构是否规范
+  - 文档完整度(README / 示例 / 引用)
+
+E · Effectiveness(有效性):
+  - 用户读完能否快速上手
+  - 步骤是否真的可执行
+  - 是否能产生预期效果
+
+【综合评级】
+  90-100 优秀 ★★★★★;75-89 良好 ★★★★;60-74 合格 ★★★;40-59 待打磨 ★★;0-39 不通过 ★
+
+返回严格 JSON,不要 markdown 代码块,不要 <think> 标签后续注释:
 {
   "score": 87,
   "verdict": "good",
-  "summary": "整体一段话",
+  "summary": "一段话:整体水平 + 最大亮点 + 最大短板(80-200 字,中文)",
   "dimensions": {
-    "format":     {"score": 22, "comments": "..."},
-    "trigger":    {"score": 20, "comments": "..."},
-    "content":    {"score": 24, "comments": "..."},
-    "structure":  {"score": 21, "comments": "..."}
+    "trust":         {"score": 18, "comments": "一句话评语(40-120 字)"},
+    "reliability":   {"score": 16, "comments": "..."},
+    "adaptability":  {"score": 18, "comments": "..."},
+    "convention":    {"score": 19, "comments": "..."},
+    "effectiveness": {"score": 16, "comments": "..."}
   },
   "suggestions": [
-    {"severity": "high|medium|low", "area": "trigger|format|content|structure", "message": "具体怎么改"}
+    {"severity": "high|medium|low", "area": "trust|reliability|adaptability|convention|effectiveness", "message": "具体怎么改(包含行动建议)"}
   ]
 }
-
-verdict 映射:
-  90+ excellent / 75-89 good / 60-74 pass / 40-59 needs_work / <40 fail
 """
 
 
+VERDICT_LABELS = {
+    "excellent": "优秀",
+    "good": "良好",
+    "pass": "合格",
+    "needs_work": "待打磨",
+    "fail": "不通过",
+}
+
+TRACE_LABELS = {
+    "trust":         "T · 信任性",
+    "reliability":   "R · 可靠性",
+    "adaptability":  "A · 适用性",
+    "convention":    "C · 规范性",
+    "effectiveness": "E · 有效性",
+}
+
+
 def _verdict(score: int) -> str:
-    if score >= 90:
-        return "excellent"
-    if score >= 75:
-        return "good"
-    if score >= 60:
-        return "pass"
-    if score >= 40:
-        return "needs_work"
+    if score >= 90: return "excellent"
+    if score >= 75: return "good"
+    if score >= 60: return "pass"
+    if score >= 40: return "needs_work"
     return "fail"
 
 
-def static_check(storage_path: str) -> dict:
-    """轻量静态检查 → 一组 issues + format 维度初始分。"""
-    base = skill_dir(storage_path)
-    issues = []
-    score = 25
+def _stars(score: int) -> float:
+    return round(score / 20.0 * 2) / 2  # 0..5,0.5 步进
 
-    # SKILL.md 存在性
+
+# ──────────────────────────────────────────────────────────────────────────────
+# 静态线索(给 LLM 看,不直接打分)
+def collect_clues(storage_path: str) -> dict:
+    """收集结构化线索:frontmatter / 文件统计 / 安全启发。"""
+    from static_scorer import _parse_frontmatter, _list_files, _read_text  # 借用工具
+
+    base = skill_dir(storage_path)
     skill_md = base / "SKILL.md"
     if not skill_md.is_file():
-        # 任意层级找一下
         found = list(base.rglob("SKILL.md"))
-        if not found:
-            issues.append({"severity": "high", "area": "format", "message": "缺 SKILL.md(可放 README.md 兜底但不推荐)"})
-            score -= 15
-        else:
-            issues.append({"severity": "medium", "area": "format", "message": f"SKILL.md 不在顶层而在 {found[0].relative_to(base)}"})
-            score -= 5
+        if found:
             skill_md = found[0]
 
-    # frontmatter
-    if skill_md.is_file():
-        text = skill_md.read_text(encoding="utf-8", errors="replace")
-        m = re.match(r"^---\s*\n(.*?)\n---\s*\n", text, re.DOTALL)
-        if not m:
-            issues.append({"severity": "high", "area": "format", "message": "SKILL.md 没有 frontmatter(--- name/description ---)"})
-            score -= 10
-        else:
+    text = _read_text(skill_md) if skill_md.is_file() else ""
+    meta, body = _parse_frontmatter(text) if text else (None, "")
+    files = _list_files(base)
+
+    # 抓外链
+    full_blob = ""
+    for f in files:
+        if f.suffix.lower() in {".md", ".py", ".sh", ".json", ".yml", ".yaml", ".txt"}:
             try:
-                meta = yaml.safe_load(m.group(1)) or {}
-                if not isinstance(meta, dict):
-                    raise ValueError
-                if not meta.get("name"):
-                    issues.append({"severity": "high", "area": "format", "message": "frontmatter 缺 name"})
-                    score -= 5
-                if not meta.get("description"):
-                    issues.append({"severity": "high", "area": "format", "message": "frontmatter 缺 description"})
-                    score -= 5
-                if meta.get("description") and len(str(meta["description"])) < 30:
-                    issues.append({"severity": "medium", "area": "trigger", "message": "description 过短(<30 字),触发判定容易模糊"})
-            except (yaml.YAMLError, ValueError):
-                issues.append({"severity": "high", "area": "format", "message": "frontmatter YAML 不合法"})
-                score -= 8
+                full_blob += "\n" + f.read_text(encoding="utf-8", errors="replace")[:10_000]
+            except OSError:
+                pass
+    urls = list(set(re.findall(r"https?://[^\s<>\"']+", full_blob)))[:20]
 
-    # 大小 / 文件数
-    files = list_tree(storage_path)
-    if not files:
-        issues.append({"severity": "high", "area": "format", "message": "包内没有文件"})
-        score = 0
-    if len(files) > 100:
-        issues.append({"severity": "medium", "area": "structure", "message": f"文件数较多 ({len(files)}),考虑精简或合并辅助资源"})
-
-    # 噪声文件
-    noise = [f for f in files if f["path"].endswith((".DS_Store", "Thumbs.db")) or "__MACOSX" in f["path"]]
-    if noise:
-        issues.append({"severity": "low", "area": "format", "message": f"含 {len(noise)} 个系统噪声文件 (.DS_Store / __MACOSX)"})
+    # 安全启发
+    risk = []
+    if re.search(r"\bcurl\b.*\|\s*(bash|sh)\b", full_blob, re.IGNORECASE):
+        risk.append("脚本里出现 `curl ... | bash` 模式,需要审外部下载来源")
+    if re.search(r"\beval\s*\(", full_blob):
+        risk.append("代码里出现 `eval()`,审是否拼接了用户输入")
+    if re.search(r"(api[_-]?key|secret|token)\s*[=:]\s*['\"][A-Za-z0-9_-]{16,}", full_blob, re.IGNORECASE):
+        risk.append("代码 / 文档里可能硬编码了凭证")
+    if re.search(r"\b(rm\s+-rf\s+/|rm\s+-rf\s+~)", full_blob):
+        risk.append("脚本含 `rm -rf /` 或 `rm -rf ~`,极高风险")
 
     return {
-        "format_seed_score": max(0, min(25, score)),
-        "static_issues": issues,
+        "has_skill_md": skill_md.is_file(),
         "skill_md_relpath": str(skill_md.relative_to(base)) if skill_md.is_file() else None,
+        "frontmatter": meta,
+        "frontmatter_complete": bool(meta and meta.get("name") and meta.get("description")),
+        "file_count": len(files),
+        "size_bytes": sum(f.stat().st_size for f in files),
+        "has_scripts": (base / "scripts").is_dir() and bool(_list_files(base / "scripts")),
+        "has_references": (base / "references").is_dir() and bool(_list_files(base / "references")),
+        "has_examples": (base / "examples").is_dir() and bool(_list_files(base / "examples")),
+        "external_urls": urls,
+        "security_risks": risk,
     }
 
 
-def _gather_skill_snapshot(storage_path: str, max_chars: int = 28000) -> str:
-    """收集要给 LLM 看的内容:SKILL.md 全文 + 其他文本文件预览(截断)。"""
+# ──────────────────────────────────────────────────────────────────────────────
+# LLM 调用
+def _safe_json(text: str) -> dict:
+    text = text.strip()
+    # 剥 reasoning 模型(MiniMax-M*、DeepSeek-R1、QwQ 等)的 <think>...</think>
+    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = text.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*\n", "", text)
+        text = re.sub(r"\n```\s*$", "", text)
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        i, j = text.find("{"), text.rfind("}")
+        if i != -1 and j != -1 and j > i:
+            try:
+                return json.loads(text[i:j+1])
+            except json.JSONDecodeError:
+                pass
+    return {}
+
+
+def _gather_snapshot(storage_path: str, max_chars: int = 28000) -> str:
     base = skill_dir(storage_path)
     files = list_tree(storage_path)
     chunks: list[str] = []
@@ -151,21 +201,16 @@ def _gather_skill_snapshot(storage_path: str, max_chars: int = 28000) -> str:
         used += len(chunk)
         return True
 
-    # 1) SKILL.md 优先全文
     skill_md = next((f for f in files if f["path"].endswith("SKILL.md")), None) \
         or next((f for f in files if f["path"].endswith("README.md")), None)
     if skill_md:
-        p = base / skill_md["path"]
         try:
-            add(skill_md["path"], p.read_text(encoding="utf-8", errors="replace"))
+            add(skill_md["path"], (base / skill_md["path"]).read_text(encoding="utf-8", errors="replace"))
         except Exception:
             pass
 
-    # 2) 文件树
-    tree_lines = [f["path"] for f in files]
-    add("FILE_TREE", "\n".join(tree_lines))
+    add("FILE_TREE", "\n".join(f["path"] for f in files))
 
-    # 3) 其他文本文件,按大小升序
     others = [f for f in files if f["is_text"] and f["path"] != (skill_md or {}).get("path")]
     others.sort(key=lambda x: x["size"])
     for f in others:
@@ -175,18 +220,15 @@ def _gather_skill_snapshot(storage_path: str, max_chars: int = 28000) -> str:
             body = (base / f["path"]).read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        # 单文件最多 6000 字符
         if len(body) > 6000:
             body = body[:6000] + "\n...[truncated]"
-        ok = add(f["path"], body)
-        if not ok:
+        if not add(f["path"], body):
             break
 
     return "".join(chunks)
 
 
 def _call_anthropic(prompt_user: str) -> tuple[dict, str]:
-    """返回 (parsed_json, raw_text)。"""
     url = settings.llm_base_url.rstrip("/") + "/v1/messages"
     headers = {
         "x-api-key": settings.llm_api_key,
@@ -195,7 +237,7 @@ def _call_anthropic(prompt_user: str) -> tuple[dict, str]:
     }
     body = {
         "model": settings.llm_model,
-        "max_tokens": 2000,
+        "max_tokens": 3000,
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": prompt_user}],
     }
@@ -203,15 +245,11 @@ def _call_anthropic(prompt_user: str) -> tuple[dict, str]:
         r = c.post(url, headers=headers, json=body)
         r.raise_for_status()
         data = r.json()
-    text = "".join(blk.get("text", "") for blk in data.get("content", []) if blk.get("type") == "text")
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
     return _safe_json(text), text
 
 
 def _call_openai_compat(prompt_user: str) -> tuple[dict, str]:
-    # base_url 兼容:
-    #   1) https://api.x.com                         → append /v1/chat/completions
-    #   2) https://api.x.com/v1                      → append /chat/completions
-    #   3) https://api.x.com/v1/chat/completions     → 原样用
     base = settings.llm_base_url.rstrip("/")
     if base.endswith("/chat/completions"):
         url = base
@@ -227,10 +265,10 @@ def _call_openai_compat(prompt_user: str) -> tuple[dict, str]:
         "model": settings.llm_model,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt_user + "\n\n请只输出 JSON,不要 markdown 代码块标记。"},
+            {"role": "user", "content": prompt_user + "\n\n只输出 JSON,不要 markdown 代码块。"},
         ],
         "temperature": 0.2,
-        "max_tokens": 2000,
+        "max_tokens": 3000,
     }
     with httpx.Client(timeout=settings.llm_timeout) as c:
         r = c.post(url, headers=headers, json=body)
@@ -240,76 +278,43 @@ def _call_openai_compat(prompt_user: str) -> tuple[dict, str]:
     return _safe_json(text), text
 
 
-def _safe_json(text: str) -> dict:
-    text = text.strip()
-    # 剥 reasoning 模型(MiniMax-M*、DeepSeek-R1、QwQ 等)的 <think>...</think> 块
-    text = re.sub(r"<think>.*?</think>\s*", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = text.strip()
-    # 剥 markdown 代码块
-    if text.startswith("```"):
-        text = re.sub(r"^```(?:json)?\s*\n", "", text)
-        text = re.sub(r"\n```\s*$", "", text)
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # 找第一个 { 到最后一个 }
-        i, j = text.find("{"), text.rfind("}")
-        if i != -1 and j != -1 and j > i:
-            try:
-                return json.loads(text[i:j+1])
-            except json.JSONDecodeError:
-                pass
-    return {"score": 0, "verdict": "fail", "summary": "LLM 输出无法解析为 JSON", "dimensions": {}, "suggestions": []}
+# ──────────────────────────────────────────────────────────────────────────────
+def inspect_skill(storage_path: str, **_ignore) -> dict:
+    """TRACE 5 维 LLM 评测,静态线索作为给 LLM 的辅助证据。
 
-
-def inspect_static(storage_path: str) -> dict:
-    """5 维静态启发式评分(参考 shaozhengmao/skill-quality-checker 思路重写)。"""
-    from static_scorer import score_skill  # 延迟导入,避免 LLM-only 场景拉依赖
-
+    返回入库 dict:
+      {score, verdict, rating, stars, summary, dimensions, suggestions,
+       clues, llm_model, duration_ms}
+    """
     t0 = time.time()
-    base = skill_dir(storage_path)
-    r = score_skill(base)
-    return {
-        "mode": "static",
-        "score": r["score"],
-        "verdict": r["verdict"],
-        "rating": r["rating"],
-        "summary": r["summary"],
-        "dimensions": r["dimensions"],
-        "suggestions": r["suggestions"],
-        "llm_model": None,
-        "duration_ms": int((time.time() - t0) * 1000),
-    }
-
-
-def inspect_llm(storage_path: str) -> dict:
-    """LLM 4 维上下文评分(原有逻辑)。"""
-    t0 = time.time()
-    static = static_check(storage_path)
+    clues = collect_clues(storage_path)
 
     if not settings.llm_api_key:
         return {
-            "mode": "llm",
             "score": 0,
             "verdict": "fail",
-            "summary": "未配 LLM key,跳过 LLM 评分。管理员配 SKILLHUB_LLM_API_KEY 后可开启。",
+            "rating": "未评估",
+            "stars": 0,
+            "summary": "未配置 LLM API key,无法生成 TRACE 评测报告。请联系管理员配置 SKILLHUB_LLM_API_KEY。",
             "dimensions": {},
             "suggestions": [],
+            "clues": clues,
             "llm_model": None,
             "duration_ms": int((time.time() - t0) * 1000),
         }
 
-    snapshot = _gather_skill_snapshot(storage_path)
-    static_brief = "\n".join(f"- [{i['severity']}] {i['area']}: {i['message']}" for i in static["static_issues"]) or "(无)"
-    user_prompt = f"""请审阅以下 skill 包。
+    snapshot = _gather_snapshot(storage_path)
+    clues_brief = _format_clues_for_prompt(clues)
+    user_prompt = f"""请按 TRACE 5 维度审阅以下 skill。
 
-【静态预检 issues】
-{static_brief}
+【静态线索(已自动收集,可作为评估依据)】
+{clues_brief}
 
-【skill 内容快照】(SKILL.md 全文 + 文件树 + 其他文本文件预览)
+【skill 全文快照】(SKILL.md / 文件树 / 其他文本)
 {snapshot}
 
-请严格按上面定义的 JSON schema 返回评分。"""
+请严格按 system 中定义的 JSON schema 输出。
+"""
 
     try:
         if settings.llm_provider == "anthropic":
@@ -318,55 +323,66 @@ def inspect_llm(storage_path: str) -> dict:
             parsed, _ = _call_openai_compat(user_prompt)
     except httpx.HTTPError as e:
         return {
-            "mode": "llm",
             "score": 0,
             "verdict": "fail",
+            "rating": "评估失败",
+            "stars": 0,
             "summary": f"LLM 调用失败: {type(e).__name__}: {e}",
             "dimensions": {},
-            "suggestions": static["static_issues"],
+            "suggestions": [],
+            "clues": clues,
             "llm_model": settings.llm_model,
             "duration_ms": int((time.time() - t0) * 1000),
         }
 
     score = max(0, min(100, int(parsed.get("score") or 0)))
+    verdict = parsed.get("verdict") or _verdict(score)
+    dims = parsed.get("dimensions") or {}
+    sugg = list(parsed.get("suggestions") or [])
+
+    # 把安全启发(高危)以 high 严重度自动塞进 suggestions(LLM 可能漏)
+    for risk in clues.get("security_risks", []):
+        if not any(risk in (s.get("message") or "") for s in sugg):
+            sugg.insert(0, {"severity": "high", "area": "trust", "message": risk})
+
+    # 给每维加 label,方便前端展示
+    for key in list(dims.keys()):
+        if isinstance(dims[key], dict):
+            dims[key]["label"] = TRACE_LABELS.get(key, key)
+            dims[key]["score"] = max(0, min(20, int(dims[key].get("score") or 0)))
+
     return {
-        "mode": "llm",
         "score": score,
-        "verdict": parsed.get("verdict") or _verdict(score),
-        "summary": parsed.get("summary") or "",
-        "dimensions": parsed.get("dimensions") or {},
-        "suggestions": list(parsed.get("suggestions") or []),
+        "verdict": verdict,
+        "verdict_label": VERDICT_LABELS.get(verdict, verdict),
+        "rating": VERDICT_LABELS.get(verdict, verdict),
+        "stars": _stars(score),
+        "summary": (parsed.get("summary") or "").strip(),
+        "dimensions": dims,
+        "suggestions": sugg,
+        "clues": clues,
         "llm_model": settings.llm_model,
         "duration_ms": int((time.time() - t0) * 1000),
     }
 
 
-def inspect_skill(storage_path: str, mode: str = "both") -> dict:
-    """mode: 'static' | 'llm' | 'both'。both 返回两份独立报告 + 综合分(均值)。"""
-    if mode == "static":
-        return inspect_static(storage_path)
-    if mode == "llm":
-        return inspect_llm(storage_path)
-
-    # both
-    static_r = inspect_static(storage_path)
-    llm_r = inspect_llm(storage_path)
-
-    if llm_r["score"] > 0:
-        # 综合分:静态 40% + LLM 60%(LLM 更能识别内容质量,权重高一点)
-        combined = round(static_r["score"] * 0.4 + llm_r["score"] * 0.6)
-    else:
-        combined = static_r["score"]
-
-    return {
-        "mode": "both",
-        "score": combined,
-        "verdict": _verdict(combined),
-        "summary": f"静态分 {static_r['score']} / LLM 分 {llm_r['score']} → 综合 {combined}",
-        "static": static_r,
-        "llm": llm_r,
-        "dimensions": {},   # 留空;两份报告分别看
-        "suggestions": [],  # 同上
-        "llm_model": llm_r.get("llm_model"),
-        "duration_ms": (static_r["duration_ms"] or 0) + (llm_r["duration_ms"] or 0),
-    }
+def _format_clues_for_prompt(c: dict) -> str:
+    lines = []
+    lines.append(f"- SKILL.md 存在: {c['has_skill_md']} / frontmatter 完整: {c['frontmatter_complete']}")
+    if c.get("frontmatter"):
+        for k in ("name", "description", "version", "allowed-tools", "model"):
+            v = c["frontmatter"].get(k)
+            if v:
+                v = str(v).strip()
+                if len(v) > 200:
+                    v = v[:200] + "..."
+                lines.append(f"  · {k}: {v}")
+    lines.append(f"- 文件数: {c['file_count']} / 总大小: {c['size_bytes']} bytes")
+    lines.append(f"- scripts/: {c['has_scripts']} · references/: {c['has_references']} · examples/: {c['has_examples']}")
+    if c.get("external_urls"):
+        lines.append(f"- 外链({len(c['external_urls'])}): " + ", ".join(c["external_urls"][:8]))
+    if c.get("security_risks"):
+        lines.append("- 安全启发(请重点评估 Trust 维度):")
+        for r in c["security_risks"]:
+            lines.append(f"  ⚠ {r}")
+    return "\n".join(lines)

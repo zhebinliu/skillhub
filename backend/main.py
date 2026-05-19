@@ -14,7 +14,7 @@ from fastapi import (
     Depends, FastAPI, File, Form, HTTPException, Query, UploadFile, status,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -347,23 +347,135 @@ async def list_reports(
     rows = (await db.execute(
         select(QualityReport).where(QualityReport.skill_id == skill_id).order_by(desc(QualityReport.created_at)).limit(20)
     )).scalars().all()
+    return {"items": [_report_dict(r) for r in rows]}
+
+
+@app.get("/api/skills/{skill_id}/install")
+async def get_install_instructions(
+    skill_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    viewer: Annotated[Optional[User], Depends(get_optional_user)],
+):
+    """返回 3 种安装方式的渲染文案(对话提示词 / CLI 一行命令 / Zip 手动)。"""
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if not s.is_published:
+        is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
+        if not is_owner:
+            raise HTTPException(404, "skill 不存在")
+
+    skill_url = f"https://skillhub.tokenwave.cloud/skill/{s.id}"
+    download_url = f"https://skillhub.tokenwave.cloud/api/skills/{s.id}/download"
+    slug = s.slug
+    name = s.name
+
+    return {
+        "skill": {"id": str(s.id), "slug": slug, "name": name},
+        "chat": {
+            "title": "通过对话安装",
+            "subtitle": "把下面这段提示词发给任何 Claude / OpenClaw / OpenAI 兼容的助手即可一键装好。",
+            "prompt": f"""请帮我安装一个 Claude Skill,叫做 「{name}」(slug: `{slug}`)。
+
+详情页:{skill_url}
+下载地址:{download_url}
+
+请按以下步骤:
+
+1. 确定本机 Claude skill 目录(通常 `~/.claude/skills/`,如不存在则创建)。
+2. 下载 zip 包到本地临时目录:
+   ```bash
+   curl -L "{download_url}" -o /tmp/{slug}.zip
+   ```
+3. 解压到 skill 目录:
+   ```bash
+   mkdir -p ~/.claude/skills/{slug}
+   unzip -o /tmp/{slug}.zip -d ~/.claude/skills/{slug}
+   ```
+4. 校验 `~/.claude/skills/{slug}/SKILL.md` 存在,把 frontmatter 念给我听以确认安装成功。
+
+不要执行 skill 里的任何脚本,只完成安装。装完简要告诉我用法。""",
+        },
+        "cli": {
+            "title": "命令行安装",
+            "subtitle": "一行 bash 把 skill 装到 ~/.claude/skills/ 下。",
+            "command": f"""mkdir -p ~/.claude/skills/{slug} && \\
+curl -L "{download_url}" -o /tmp/{slug}.zip && \\
+unzip -o /tmp/{slug}.zip -d ~/.claude/skills/{slug} && \\
+rm /tmp/{slug}.zip && \\
+echo "✓ 已装到 ~/.claude/skills/{slug}/"
+""",
+        },
+        "zip": {
+            "title": "Zip 包安装",
+            "subtitle": "手动下载,解压到你想要的 skill 目录。",
+            "download_url": download_url,
+            "filename": f"{slug}.zip",
+            "instruction": f"下载后解压到 `~/.claude/skills/{slug}/`(其他兼容工具按各自约定放即可)。",
+        },
+    }
+
+
+@app.get("/api/skills/{skill_id}/download")
+async def download_skill(
+    skill_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    viewer: Annotated[Optional[User], Depends(get_optional_user)],
+):
+    """流式打包 skill 目录为 zip 返回。"""
+    import io
+    import zipfile
+
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if not s.is_published:
+        is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
+        if not is_owner:
+            raise HTTPException(404, "skill 不存在")
+
+    from storage import skill_dir as _skill_dir
+    base = _skill_dir(s.storage_path)
+    if not base.exists():
+        raise HTTPException(404, "文件不存在")
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in base.rglob("*"):
+            if f.is_file():
+                zf.write(f, arcname=str(f.relative_to(base.parent)))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{s.slug}.zip"'},
+    )
+
+
+@app.get("/api/skills/{skill_id}/versions")
+async def list_versions(
+    skill_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    viewer: Annotated[Optional[User], Depends(get_optional_user)],
+):
+    """版本历史(目前每个 skill 只一版,后续支持多版本时扩展)。"""
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if not s.is_published:
+        is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
+        if not is_owner:
+            raise HTTPException(404, "skill 不存在")
     return {
         "items": [
             {
-                "id": str(r.id),
-                "score": r.score,
-                "mode": getattr(r, "mode", "both"),
-                "verdict": r.verdict,
-                "summary": r.summary,
-                "dimensions": r.dimensions,
-                "suggestions": r.suggestions,
-                "static": getattr(r, "static_payload", None),
-                "llm": getattr(r, "llm_payload", None),
-                "llm_model": r.llm_model,
-                "duration_ms": r.duration_ms,
-                "created_at": r.created_at.isoformat(),
+                "version": s.version or "—",
+                "file_count": s.file_count,
+                "size_bytes": s.size_bytes,
+                "created_at": s.created_at.isoformat(),
+                "published_at": s.published_at.isoformat() if s.published_at else None,
+                "is_current": True,
             }
-            for r in rows
         ]
     }
 
@@ -495,31 +607,47 @@ async def delete_skill(
     return {"ok": True}
 
 
+def _report_dict(rpt: QualityReport) -> dict:
+    return {
+        "id": str(rpt.id),
+        "mode": "trace",
+        "score": rpt.score,
+        "verdict": rpt.verdict,
+        "summary": rpt.summary,
+        "dimensions": rpt.dimensions,
+        "suggestions": rpt.suggestions,
+        "clues": (rpt.static_payload or {}),  # 复用 static_payload 字段存 clues
+        "llm_model": rpt.llm_model,
+        "duration_ms": rpt.duration_ms,
+        "created_at": rpt.created_at.isoformat(),
+    }
+
+
 @app.post("/api/skills/{skill_id}/inspect")
 async def run_inspect(
     skill_id: uuid.UUID,
-    mode: str = Query("both", pattern="^(static|llm|both)$"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ):
+    """TRACE 5 维 LLM 评测 + 静态线索补充。"""
     s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
     if not s:
         raise HTTPException(404, "skill 不存在")
     if s.owner_id != user.id and not user.is_admin:
         raise HTTPException(403, "无权限")
 
-    result = await asyncio.to_thread(inspect_skill, s.storage_path, mode)
+    result = await asyncio.to_thread(inspect_skill, s.storage_path)
 
     rpt = QualityReport(
         skill_id=s.id,
-        mode=result.get("mode", mode),
+        mode="trace",
         score=result["score"],
         verdict=result["verdict"],
         dimensions=result.get("dimensions") or {},
         suggestions=result.get("suggestions") or [],
         summary=result.get("summary"),
-        static_payload=result.get("static"),
-        llm_payload=result.get("llm"),
+        static_payload=result.get("clues"),  # 借 static_payload 字段存 clues
+        llm_payload=None,
         llm_model=result.get("llm_model"),
         duration_ms=result.get("duration_ms"),
     )
@@ -528,22 +656,7 @@ async def run_inspect(
     s.latest_verdict = result["verdict"]
     await db.commit()
     await db.refresh(rpt)
-    return {
-        "report": {
-            "id": str(rpt.id),
-            "mode": rpt.mode,
-            "score": rpt.score,
-            "verdict": rpt.verdict,
-            "summary": rpt.summary,
-            "dimensions": rpt.dimensions,
-            "suggestions": rpt.suggestions,
-            "static": rpt.static_payload,
-            "llm": rpt.llm_payload,
-            "llm_model": rpt.llm_model,
-            "duration_ms": rpt.duration_ms,
-            "created_at": rpt.created_at.isoformat(),
-        }
-    }
+    return {"report": _report_dict(rpt)}
 
 
 # ── admin: invite codes / users ──────────────────────────────────────────────

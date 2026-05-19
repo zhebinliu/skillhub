@@ -61,31 +61,46 @@ export interface SkillFile {
   is_text: boolean;
 }
 
-export interface ReportSlice {
-  mode?: string;
-  score: number;
-  verdict: string;
-  rating?: string;
-  summary?: string | null;
-  dimensions: Record<string, { score: number; comments?: string; label?: string }>;
-  suggestions: Array<{ severity: string; area: string; message: string }>;
-  llm_model?: string | null;
-  duration_ms?: number | null;
-}
+export type TraceDim = 'trust' | 'reliability' | 'adaptability' | 'convention' | 'effectiveness';
 
 export interface Report {
   id: string;
-  mode: 'static' | 'llm' | 'both';
-  score: number;
-  verdict: string;
+  mode: 'trace';
+  score: number;          // 0-100
+  verdict: string;        // excellent | good | pass | needs_work | fail
   summary?: string | null;
-  dimensions: Record<string, { score: number; comments?: string; label?: string }>;
+  dimensions: Partial<Record<TraceDim, { score: number; comments?: string; label?: string }>>;
   suggestions: Array<{ severity: string; area: string; message: string }>;
-  static?: ReportSlice | null;
-  llm?: ReportSlice | null;
+  clues?: {
+    has_skill_md?: boolean;
+    frontmatter_complete?: boolean;
+    file_count?: number;
+    size_bytes?: number;
+    has_scripts?: boolean;
+    has_references?: boolean;
+    has_examples?: boolean;
+    external_urls?: string[];
+    security_risks?: string[];
+  };
   llm_model?: string | null;
   duration_ms?: number | null;
   created_at: string;
+}
+
+export interface InstallInstructions {
+  skill: { id: string; slug: string; name: string };
+  chat: { title: string; subtitle: string; prompt: string };
+  cli: { title: string; subtitle: string; command: string };
+  zip: { title: string; subtitle: string; download_url: string; filename: string; instruction: string };
+}
+
+export interface SkillVersion {
+  version: string;
+  file_count: number;
+  size_bytes: number;
+  created_at: string;
+  published_at: string | null;
+  is_current: boolean;
 }
 
 export interface InviteCode {
@@ -135,8 +150,13 @@ export const skillsApi = {
   },
   publish: (id: string, publish: boolean) =>
     api.post<{ skill: Skill }>(`/api/skills/${id}/publish`, null, { params: { publish } }).then((r) => r.data),
-  inspect: (id: string, mode: 'static' | 'llm' | 'both' = 'both') =>
-    api.post<{ report: Report }>(`/api/skills/${id}/inspect`, null, { params: { mode } }).then((r) => r.data),
+  inspect: (id: string) =>
+    api.post<{ report: Report }>(`/api/skills/${id}/inspect`).then((r) => r.data),
+  install: (id: string) =>
+    api.get<InstallInstructions>(`/api/skills/${id}/install`).then((r) => r.data),
+  versions: (id: string) =>
+    api.get<{ items: SkillVersion[] }>(`/api/skills/${id}/versions`).then((r) => r.data),
+  downloadUrl: (id: string) => `/api/skills/${id}/download`,
   remove: (id: string) => api.delete(`/api/skills/${id}`).then((r) => r.data),
 };
 
