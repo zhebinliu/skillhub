@@ -278,8 +278,13 @@ def _is_text_file(p: Path) -> bool:
     return ext in TEXT_EXTS
 
 
-def read_file(storage_path: str, rel_path: str) -> tuple[Optional[str], bytes, bool]:
-    """返回 (text_or_none, raw_bytes, is_text)。超大文件 raise。"""
+def read_file(storage_path: str, rel_path: str) -> tuple[Optional[str], bytes, bool, bool, int]:
+    """返回 (text_or_none, raw_bytes, is_text, truncated, full_size)。
+
+    超过 max_text_preview_kb 时:文本文件截前 max_bytes,truncated=True;
+    binary 文件直接返回前 max_bytes(界面会显示 binary 不预览)。
+    路径越界或不存在 → FileNotFoundError。
+    """
     base = skill_dir(storage_path).resolve()
     target = (base / rel_path).resolve()
     try:
@@ -288,20 +293,20 @@ def read_file(storage_path: str, rel_path: str) -> tuple[Optional[str], bytes, b
         raise FileNotFoundError(rel_path)
     if not target.is_file():
         raise FileNotFoundError(rel_path)
-    size = target.stat().st_size
+    full_size = target.stat().st_size
     max_bytes = settings.max_text_preview_kb * 1024
-    if size > max_bytes:
-        raise ValueError(f"file too large to preview ({size} bytes > {max_bytes})")
-    data = target.read_bytes()
+    truncated = full_size > max_bytes
+    with open(target, "rb") as f:
+        data = f.read(max_bytes if truncated else full_size)
     if _is_text_file(target):
         try:
-            return data.decode("utf-8"), data, True
+            return data.decode("utf-8"), data, True, truncated, full_size
         except UnicodeDecodeError:
             try:
-                return data.decode("utf-8", errors="replace"), data, True
+                return data.decode("utf-8", errors="replace"), data, True, truncated, full_size
             except Exception:
-                return None, data, False
-    return None, data, False
+                return None, data, False, truncated, full_size
+    return None, data, False, truncated, full_size
 
 
 def remove_skill(storage_path: str) -> None:

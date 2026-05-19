@@ -315,11 +315,9 @@ async def get_skill_file(
         if not is_owner:
             raise HTTPException(404, "skill 不存在")
     try:
-        text, raw, is_text = read_file(s.storage_path, path)
+        text, raw, is_text, truncated, full_size = read_file(s.storage_path, path)
     except FileNotFoundError:
         raise HTTPException(404, "文件不存在")
-    except ValueError as e:
-        raise HTTPException(413, str(e))
     mime, _ = mimetypes.guess_type(path)
     return {
         "path": path,
@@ -328,6 +326,8 @@ async def get_skill_file(
         "text": text,
         "base64": None if is_text else base64.b64encode(raw).decode("ascii"),
         "size": len(raw),
+        "full_size": full_size,
+        "truncated": truncated,
     }
 
 

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     storage_root: str = "/data/skillhub"
     max_skill_size_mb: int = 50
     max_file_count: int = 500
-    max_text_preview_kb: int = 512  # 单文件文本预览最大 512KB
+    max_text_preview_kb: int = 2048  # 单文件文本预览硬上限 2MB;超过时只读前 2MB + truncated 标记
 
     # LLM(独立)
     llm_provider: str = "anthropic"  # anthropic | openai_compat

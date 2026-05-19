@@ -43,9 +43,15 @@ export default function FilePreview({ skillId, path }: { skillId: string; path: 
       <div className="px-5 py-3 border-b border-white/[0.06] flex items-center justify-between flex-shrink-0">
         <div className="font-mono text-xs text-zinc-300 truncate">{path}</div>
         <div className="text-[10px] text-zinc-500 font-mono">
-          {bytes(data.size)} · {data.mime || (data.is_text ? 'text' : 'binary')}
+          {data.truncated ? `${bytes(data.size)} / ${bytes(data.full_size)}` : bytes(data.size)} ·{' '}
+          {data.mime || (data.is_text ? 'text' : 'binary')}
         </div>
       </div>
+      {data.truncated && (
+        <div className="px-5 py-2 text-[11px] text-amber-300 bg-amber-400/[0.06] border-b border-amber-400/20">
+          ⚠ 文件超过预览上限,只展示前 {bytes(data.size)},完整 {bytes(data.full_size)}。在「版本历史」tab 下载 zip 看全部。
+        </div>
+      )}
       <div className="flex-1 overflow-auto">
         {data.is_text && data.text != null ? (
           isMd ? (
@@ -61,7 +67,7 @@ export default function FilePreview({ skillId, path }: { skillId: string; path: 
           )
         ) : (
           <div className="p-6 text-zinc-500 text-sm">
-            二进制文件,暂不支持预览({bytes(data.size)})
+            二进制文件,暂不支持预览({bytes(data.full_size)})
           </div>
         )}
       </div>

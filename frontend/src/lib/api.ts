@@ -131,9 +131,11 @@ export const skillsApi = {
   get: (id: string) =>
     api.get<{ skill: Skill; tree: SkillFile[] }>(`/api/skills/${id}`).then((r) => r.data),
   getFile: (id: string, path: string) =>
-    api.get<{ path: string; mime: string | null; is_text: boolean; text: string | null; base64: string | null; size: number }>(
-      `/api/skills/${id}/file`, { params: { path } }
-    ).then((r) => r.data),
+    api.get<{
+      path: string; mime: string | null; is_text: boolean;
+      text: string | null; base64: string | null;
+      size: number; full_size: number; truncated: boolean;
+    }>(`/api/skills/${id}/file`, { params: { path } }).then((r) => r.data),
   reports: (id: string) => api.get<{ items: Report[] }>(`/api/skills/${id}/reports`).then((r) => r.data),
   uploadZip: (file: File, nameHint?: string) => {
     const fd = new FormData();
