@@ -44,6 +44,55 @@ def new_storage_path() -> str:
     return uuid.uuid4().hex
 
 
+def _decode_tar_name(name: str) -> str:
+    """tar 文件名编码修复(对应 surrogateescape encoded bytes)。"""
+    try:
+        raw = name.encode("utf-8", errors="surrogateescape")
+    except UnicodeEncodeError:
+        return name
+    # 已经是合法 UTF-8 就直接返回
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        pass
+    for enc in ("gbk", "gb18030", "big5", "shift_jis"):
+        try:
+            decoded = raw.decode(enc)
+            if "�" not in decoded:
+                return decoded
+        except UnicodeDecodeError:
+            continue
+    return name
+
+
+def _decode_zip_filename(member: "zipfile.ZipInfo") -> str:
+    """zip member 的 filename 编码修复。
+
+    zip 规范:flag_bits 第 11 位(0x800)= 1 表示 UTF-8;否则历史上是 CP437,
+    但中文 Windows / Mac 用的中文 zip 工具(WinRAR / 7z / Mac 自带归档)默认用
+    本地编码(GBK / CP936 / GB18030)而不会设 UTF-8 flag。
+
+    Python zipfile 拿到无 flag 的 filename 时,会先用 CP437 解出来一串"乱码"。
+    我们把它 encode 回 bytes,再依次试 utf-8 / gbk / gb18030 / big5 解码。
+    """
+    name = member.filename
+    if member.flag_bits & 0x800:
+        return name  # 已经是 UTF-8
+    try:
+        raw = name.encode("cp437")
+    except UnicodeEncodeError:
+        return name
+    for enc in ("utf-8", "gbk", "gb18030", "big5", "shift_jis"):
+        try:
+            decoded = raw.decode(enc)
+            # 多重判断:解码出来不能再有"明显是另一种乱码"的字符
+            if "�" not in decoded:
+                return decoded
+        except UnicodeDecodeError:
+            continue
+    return name  # 实在猜不出来,沿用 cp437 解的结果
+
+
 def _safe_member_path(base: Path, member_name: str) -> Optional[Path]:
     """归一化压缩包成员路径,拦截 zip-slip。"""
     # 干掉 macOS 元数据 / 隐藏特殊目录
@@ -95,17 +144,20 @@ def extract_zip(data: bytes, storage_path: str) -> dict:
             for member in zf.infolist():
                 if member.is_dir():
                     continue
+                # 修中文 zip 文件名乱码(WinRAR/7z/Mac 归档默认 GBK,不设 UTF-8 flag)
+                decoded_name = _decode_zip_filename(member)
                 if len(extracted) >= settings.max_file_count:
                     raise UploadError(f"文件数超过上限 {settings.max_file_count}")
-                target = _safe_member_path(base, member.filename)
+                target = _safe_member_path(base, decoded_name)
                 if target is None:
                     continue  # 跳过非法/系统文件
                 if member.file_size > max_bytes:
-                    raise UploadError(f"单文件 {member.filename} 超过 {settings.max_skill_size_mb}MB")
+                    raise UploadError(f"单文件 {decoded_name} 超过 {settings.max_skill_size_mb}MB")
                 total_size += member.file_size
                 if total_size > max_bytes:
                     raise UploadError(f"skill 总大小超过 {settings.max_skill_size_mb}MB")
                 target.parent.mkdir(parents=True, exist_ok=True)
+                # zf.open(member) 用 member 的内部偏移读取数据,跟 filename 字符串无关 → 安全
                 with zf.open(member) as src, open(target, "wb") as dst:
                     shutil.copyfileobj(src, dst)
                 extracted.append(target)
@@ -125,13 +177,17 @@ def extract_tar(data: bytes, storage_path: str) -> dict:
     max_bytes = settings.max_skill_size_mb * 1024 * 1024
 
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
+        # encoding="utf-8" + errors="surrogateescape" 让 tarfile 把非 UTF-8 字节
+        # 保留为 surrogate,后面在 _decode_tar_name 里反向修复
+        with tarfile.open(fileobj=io.BytesIO(data), mode="r:*",
+                          encoding="utf-8", errors="surrogateescape") as tf:
             for member in tf.getmembers():
                 if not member.isfile():
                     continue
                 if len(extracted) >= settings.max_file_count:
                     raise UploadError(f"文件数超过上限 {settings.max_file_count}")
-                target = _safe_member_path(base, member.name)
+                decoded_name = _decode_tar_name(member.name)
+                target = _safe_member_path(base, decoded_name)
                 if target is None:
                     continue
                 if member.size > max_bytes:
