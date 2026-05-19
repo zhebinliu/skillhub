@@ -50,6 +50,8 @@ export interface Skill {
   published_at?: string | null;
   latest_score?: number | null;
   latest_verdict?: string | null;
+  inspecting?: boolean;
+  inspecting_started_at?: string | null;
   view_count: number;
   created_at: string;
   updated_at: string;
@@ -159,15 +161,24 @@ export const skillsApi = {
   versions: (id: string) =>
     api.get<{ items: SkillVersion[] }>(`/api/skills/${id}/versions`).then((r) => r.data),
   downloadUrl: (id: string) => `/api/skills/${id}/download`,
+  rawUrl: (id: string, path: string) => `/api/skills/${id}/raw?path=${encodeURIComponent(path)}`,
   remove: (id: string) => api.delete(`/api/skills/${id}`).then((r) => r.data),
 };
+
+export type AdminUser = AuthUser & { is_active: boolean; created_at: string; skill_count?: number };
 
 export const adminApi = {
   listInvites: () => api.get<{ items: InviteCode[] }>('/api/admin/invites').then((r) => r.data),
   createInvite: (body: { note?: string; grants_admin?: boolean; expires_in_days?: number }) =>
     api.post<{ code: string; id: string; expires_at: string | null }>('/api/admin/invites', body).then((r) => r.data),
   deleteInvite: (id: string) => api.delete(`/api/admin/invites/${id}`).then((r) => r.data),
-  listUsers: () => api.get<{ items: Array<AuthUser & { is_active: boolean; created_at: string; skill_count: number }> }>(
-    '/api/admin/users'
-  ).then((r) => r.data),
+  listUsers: () => api.get<{ items: AdminUser[] }>('/api/admin/users').then((r) => r.data),
+  createUser: (body: {
+    email: string; username: string; password: string;
+    display_name?: string; is_admin?: boolean;
+  }) => api.post<AdminUser>('/api/admin/users', body).then((r) => r.data),
+  patchUser: (id: string, body: {
+    display_name?: string; is_admin?: boolean; is_active?: boolean; password?: string;
+  }) => api.patch<AdminUser>(`/api/admin/users/${id}`, body).then((r) => r.data),
+  deleteUser: (id: string) => api.delete(`/api/admin/users/${id}`).then((r) => r.data),
 };

@@ -20,7 +20,7 @@ export default function UploadPage() {
     setBusy(true);
     try {
       const { skill } = await skillsApi.uploadZip(file, file.name);
-      toast('已收到 skill,先存为草稿', 'success');
+      toast('已收到,TRACE 自动评测开始(30-90 秒)', 'success');
       nav(`/dashboard/skill/${skill.id}`);
     } catch (err: any) {
       toast(err?.response?.data?.detail || '上传失败', 'error');
@@ -41,7 +41,7 @@ export default function UploadPage() {
     setBusy(true);
     try {
       const { skill } = await skillsApi.uploadFiles(arr, norm, nameHint);
-      toast('已收到 skill,先存为草稿', 'success');
+      toast('已收到,TRACE 自动评测开始(30-90 秒)', 'success');
       nav(`/dashboard/skill/${skill.id}`);
     } catch (err: any) {
       toast(err?.response?.data?.detail || '上传失败', 'error');

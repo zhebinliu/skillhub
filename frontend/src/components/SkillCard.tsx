@@ -22,9 +22,17 @@ export default function SkillCard({ skill, to }: { skill: Skill; to?: string }) 
             {skill.owner_display_name || skill.owner_username || '—'} / {skill.slug}
           </div>
         </div>
-        {skill.latest_score != null && (
+        {skill.inspecting ? (
+          <div className="shrink-0 px-2.5 py-1 rounded-full text-xs ring-1 bg-iris-500/10 text-iris-300 ring-iris-400/30 inline-flex items-center gap-1.5">
+            <span className="relative flex h-1.5 w-1.5">
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-iris-400 opacity-75" />
+              <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-iris-400" />
+            </span>
+            评测中
+          </div>
+        ) : skill.latest_score != null && (
           <div className={`shrink-0 px-2.5 py-1 rounded-full text-xs font-mono ring-1 ${v.bg} ${v.color} ${v.ring}`}>
-            {skill.latest_score}
+            {(skill.latest_score / 20).toFixed(1)}
             <span className="opacity-60 ml-1 text-[10px]">{v.label}</span>
           </div>
         )}

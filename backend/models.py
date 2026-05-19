@@ -68,6 +68,7 @@ class Skill(Base):
     # 最新质检快照(冗余,方便首页排序 / 显示徽章)
     latest_score: Mapped[int | None] = mapped_column(Integer)
     latest_verdict: Mapped[str | None] = mapped_column(String(32))
+    inspecting_started_at: Mapped[datetime | None] = mapped_column(DateTime)  # 后台评测中标记
 
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)

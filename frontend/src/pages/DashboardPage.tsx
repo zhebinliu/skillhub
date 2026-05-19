@@ -10,6 +10,10 @@ export default function DashboardPage() {
   const { data, isLoading } = useQuery({
     queryKey: ['skills', 'mine'],
     queryFn: () => skillsApi.mine(),
+    refetchInterval: (q) => {
+      const items = (q.state.data as any)?.items || [];
+      return items.some((s: any) => s.inspecting) ? 8000 : false;
+    },
   });
 
   const items = data?.items || [];
@@ -75,8 +79,16 @@ export default function DashboardPage() {
                   <span className="text-zinc-500 inline-flex items-center gap-1">
                     <FileCode2 className="h-3 w-3" /> {s.file_count} · {bytes(s.size_bytes)}
                   </span>
-                  {s.latest_score != null ? (
-                    <span className={`${v.color}`}>{s.latest_score} 分 · {v.label}</span>
+                  {s.inspecting ? (
+                    <span className="text-iris-300 inline-flex items-center gap-1">
+                      <span className="relative flex h-1.5 w-1.5">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-iris-400 opacity-75" />
+                        <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-iris-400" />
+                      </span>
+                      TRACE 评测中…
+                    </span>
+                  ) : s.latest_score != null ? (
+                    <span className={`${v.color}`}>{(s.latest_score / 20).toFixed(1)}/5 · {v.label}</span>
                   ) : (
                     <span className="text-zinc-600">未质检</span>
                   )}

@@ -22,11 +22,13 @@ export default function MySkillPage() {
     queryKey: ['skill', id],
     queryFn: () => skillsApi.get(id!),
     enabled: !!id,
+    refetchInterval: (q) => ((q.state.data as any)?.skill?.inspecting ? 6000 : false),
   });
   const reports = useQuery({
     queryKey: ['reports', id],
     queryFn: () => skillsApi.reports(id!),
     enabled: !!id,
+    refetchInterval: () => (data?.skill?.inspecting ? 6000 : false),
   });
 
   useEffect(() => {
@@ -83,7 +85,7 @@ export default function MySkillPage() {
 
       <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
         <div className="min-w-0">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="text-2xl font-bold heading-display">{s.name}</h1>
             {s.is_published ? (
               <span className="chip text-emerald-300 ring-1 ring-emerald-400/30 bg-emerald-400/10">
@@ -92,6 +94,15 @@ export default function MySkillPage() {
             ) : (
               <span className="chip text-amber-300 ring-1 ring-amber-400/30 bg-amber-400/10">
                 <EyeOff className="h-3 w-3" /> 草稿
+              </span>
+            )}
+            {s.inspecting && (
+              <span className="chip text-iris-300 ring-1 ring-iris-400/30 bg-iris-500/10 inline-flex items-center gap-1.5">
+                <span className="relative flex h-1.5 w-1.5">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-iris-400 opacity-75" />
+                  <span className="relative inline-flex h-1.5 w-1.5 rounded-full bg-iris-400" />
+                </span>
+                TRACE 评测中
               </span>
             )}
           </div>

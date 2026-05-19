@@ -73,12 +73,13 @@ def _rand(n: int) -> str:
 async def lifespan(app: FastAPI):
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        # 老库追加新列(quality_reports.mode / .static_payload / .llm_payload)
+        # 老库追加新列
         for stmt in (
             "ALTER TABLE quality_reports ADD COLUMN IF NOT EXISTS mode VARCHAR(16) NOT NULL DEFAULT 'both'",
             "ALTER TABLE quality_reports ADD COLUMN IF NOT EXISTS static_payload JSONB",
             "ALTER TABLE quality_reports ADD COLUMN IF NOT EXISTS llm_payload JSONB",
             "CREATE INDEX IF NOT EXISTS ix_quality_reports_mode ON quality_reports (mode)",
+            "ALTER TABLE skills ADD COLUMN IF NOT EXISTS inspecting_started_at TIMESTAMP",
         ):
             await conn.exec_driver_sql(stmt)
     try:
@@ -164,6 +165,8 @@ def _skill_dict(s: Skill, owner: Optional[User] = None) -> dict:
         "published_at": s.published_at.isoformat() if s.published_at else None,
         "latest_score": s.latest_score,
         "latest_verdict": s.latest_verdict,
+        "inspecting": s.inspecting_started_at is not None,
+        "inspecting_started_at": s.inspecting_started_at.isoformat() if s.inspecting_started_at else None,
         "view_count": s.view_count,
         "created_at": s.created_at.isoformat(),
         "updated_at": s.updated_at.isoformat(),
@@ -348,6 +351,50 @@ async def list_reports(
         select(QualityReport).where(QualityReport.skill_id == skill_id).order_by(desc(QualityReport.created_at)).limit(20)
     )).scalars().all()
     return {"items": [_report_dict(r) for r in rows]}
+
+
+@app.get("/api/skills/{skill_id}/raw")
+async def get_skill_raw(
+    skill_id: uuid.UUID,
+    path: str,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    viewer: Annotated[Optional[User], Depends(get_optional_user)],
+):
+    """直接返回 raw bytes,带 mime header。用于 <img> / <iframe pdf> / <video> / <audio>。"""
+    from storage import skill_dir as _skill_dir
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if not s.is_published:
+        is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
+        if not is_owner:
+            raise HTTPException(404, "skill 不存在")
+
+    base = _skill_dir(s.storage_path).resolve()
+    target = (base / path).resolve()
+    try:
+        target.relative_to(base)
+    except ValueError:
+        raise HTTPException(404, "文件不存在")
+    if not target.is_file():
+        raise HTTPException(404, "文件不存在")
+
+    mime, _ = mimetypes.guess_type(path)
+    mime = mime or "application/octet-stream"
+
+    def _iter():
+        with open(target, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                yield chunk
+
+    return StreamingResponse(
+        _iter(),
+        media_type=mime,
+        headers={
+            "Content-Length": str(target.stat().st_size),
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @app.get("/api/skills/{skill_id}/install")
@@ -562,11 +609,52 @@ async def _create_skill(
         size_bytes=summary.get("size_bytes") or 0,
         file_count=summary.get("file_count") or 0,
         is_published=False,
+        inspecting_started_at=datetime.utcnow(),  # 标记后台评测中
     )
     db.add(s)
     await db.commit()
     await db.refresh(s)
+    # 上传成功 → fire-and-forget 后台跑 TRACE 评测
+    asyncio.create_task(_auto_inspect(s.id, s.storage_path))
     return s
+
+
+async def _auto_inspect(skill_id: uuid.UUID, storage_path: str) -> None:
+    """上传后台自动质检。失败时只清 inspecting flag,不抛异常。"""
+    try:
+        result = await asyncio.to_thread(inspect_skill, storage_path)
+        async with SessionLocal() as db:
+            rpt = QualityReport(
+                skill_id=skill_id,
+                mode="trace",
+                score=result["score"],
+                verdict=result["verdict"],
+                dimensions=result.get("dimensions") or {},
+                suggestions=result.get("suggestions") or [],
+                summary=result.get("summary"),
+                static_payload=result.get("clues"),
+                llm_model=result.get("llm_model"),
+                duration_ms=result.get("duration_ms"),
+            )
+            db.add(rpt)
+            s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+            if s:
+                s.latest_score = result["score"]
+                s.latest_verdict = result["verdict"]
+                s.inspecting_started_at = None
+            await db.commit()
+        logger.info("auto-inspect 完成 skill=%s score=%s", skill_id, result["score"])
+    except Exception:
+        logger.exception("auto-inspect 失败 skill=%s", skill_id)
+        # 失败也要清 flag,免得 UI 一直显示"评测中"
+        try:
+            async with SessionLocal() as db:
+                s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+                if s:
+                    s.inspecting_started_at = None
+                    await db.commit()
+        except Exception:
+            pass
 
 
 @app.post("/api/skills/{skill_id}/publish")
@@ -754,3 +842,123 @@ async def list_users(
             for u in rows
         ]
     }
+
+
+class UserCreateIn(BaseModel):
+    email: EmailStr
+    username: str = Field(min_length=2, max_length=64)
+    password: str = Field(min_length=6, max_length=128)
+    display_name: Optional[str] = None
+    is_admin: bool = False
+
+
+class UserPatchIn(BaseModel):
+    display_name: Optional[str] = None
+    is_admin: Optional[bool] = None
+    is_active: Optional[bool] = None
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+
+
+@app.post("/api/admin/users")
+async def admin_create_user(
+    body: UserCreateIn,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    """管理员直接创建用户(不需邀请码)。"""
+    dup = (await db.execute(
+        select(User).where(or_(User.email == str(body.email), User.username == body.username))
+    )).scalar_one_or_none()
+    if dup:
+        raise HTTPException(400, "邮箱或用户名已被使用")
+    u = User(
+        email=str(body.email),
+        username=body.username,
+        password_hash=hash_password(body.password),
+        display_name=body.display_name or body.username,
+        is_admin=body.is_admin,
+        is_active=True,
+    )
+    db.add(u)
+    await db.commit()
+    await db.refresh(u)
+    return {
+        **_user_dict(u),
+        "is_active": u.is_active,
+        "created_at": u.created_at.isoformat(),
+        "skill_count": 0,
+    }
+
+
+@app.patch("/api/admin/users/{user_id}")
+async def admin_patch_user(
+    user_id: uuid.UUID,
+    body: UserPatchIn,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "用户不存在")
+
+    # 不允许 admin 把自己降级 / 停用 / 改密(避免锁死自己)
+    if u.id == admin.id:
+        if body.is_admin is False:
+            raise HTTPException(400, "不能取消自己的管理员权限")
+        if body.is_active is False:
+            raise HTTPException(400, "不能停用自己")
+
+    # 系统至少留一个 active admin
+    if body.is_admin is False or body.is_active is False:
+        other_admins = (await db.execute(
+            select(func.count(User.id)).where(
+                User.id != u.id, User.is_admin == True, User.is_active == True
+            )
+        )).scalar_one()
+        if other_admins == 0 and u.is_admin and u.is_active:
+            raise HTTPException(400, "系统至少要保留一个有效管理员")
+
+    if body.display_name is not None:
+        u.display_name = body.display_name
+    if body.is_admin is not None:
+        u.is_admin = body.is_admin
+    if body.is_active is not None:
+        u.is_active = body.is_active
+    if body.password:
+        u.password_hash = hash_password(body.password)
+
+    await db.commit()
+    await db.refresh(u)
+    return {
+        **_user_dict(u),
+        "is_active": u.is_active,
+        "created_at": u.created_at.isoformat(),
+    }
+
+
+@app.delete("/api/admin/users/{user_id}")
+async def admin_delete_user(
+    user_id: uuid.UUID,
+    admin: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    u = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+    if not u:
+        raise HTTPException(404, "用户不存在")
+    if u.id == admin.id:
+        raise HTTPException(400, "不能删除自己")
+    # 该用户名下还有 skill → 拒绝(避免误删数据)
+    skill_count = (await db.execute(
+        select(func.count(Skill.id)).where(Skill.owner_id == u.id)
+    )).scalar_one()
+    if skill_count > 0:
+        raise HTTPException(400, f"该用户名下还有 {skill_count} 个 skill,先转移或删除后再删用户")
+    # 用过的邀请码 used_by 解除关联
+    await db.execute(
+        InviteCode.__table__.update()
+        .where(InviteCode.used_by == u.id)
+        .values(used_by=None)
+    )
+    await db.delete(u)
+    await db.commit()
+    return {"ok": True}
