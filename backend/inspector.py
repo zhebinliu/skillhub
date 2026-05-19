@@ -179,7 +179,13 @@ def _safe_json(text: str) -> dict:
                 return json.loads(text[i:j+1])
             except json.JSONDecodeError:
                 pass
-    return {}
+    # 解析失败,把原文前 400 字塞进 summary 方便排查
+    head = (text or "").strip()[:400]
+    return {
+        "score": 0, "verdict": "fail",
+        "summary": f"LLM 输出无法解析为 JSON(可能被 max_tokens 截断)。原文头部:{head}",
+        "dimensions": {}, "suggestions": [],
+    }
 
 
 def _gather_snapshot(storage_path: str, max_chars: int = 28000) -> str:
@@ -237,7 +243,7 @@ def _call_anthropic(prompt_user: str) -> tuple[dict, str]:
     }
     body = {
         "model": settings.llm_model,
-        "max_tokens": 3000,
+        "max_tokens": 8000,  # reasoning 模型 <think> 块可能吃 1500-3000,留余量给 JSON 输出
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": prompt_user}],
     }
@@ -268,7 +274,7 @@ def _call_openai_compat(prompt_user: str) -> tuple[dict, str]:
             {"role": "user", "content": prompt_user + "\n\n只输出 JSON,不要 markdown 代码块。"},
         ],
         "temperature": 0.2,
-        "max_tokens": 3000,
+        "max_tokens": 8000,  # reasoning 模型 <think> 块可能吃 1500-3000,留余量给 JSON 输出
     }
     with httpx.Client(timeout=settings.llm_timeout) as c:
         r = c.post(url, headers=headers, json=body)
