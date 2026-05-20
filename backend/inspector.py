@@ -283,7 +283,7 @@ def _call_anthropic(prompt_user: str) -> tuple[dict, str]:
     }
     body = {
         "model": settings.llm_model,
-        "max_tokens": 8000,  # reasoning 模型 <think> 块可能吃 1500-3000,留余量给 JSON 输出
+        "max_tokens": 16000,  # reasoning 模型 <think> 块长,加厚 skill 内容多,给足空间防 JSON 截断
         "system": SYSTEM_PROMPT,
         "messages": [{"role": "user", "content": prompt_user}],
     }
@@ -314,7 +314,7 @@ def _call_openai_compat(prompt_user: str) -> tuple[dict, str]:
             {"role": "user", "content": prompt_user + "\n\n只输出 JSON,不要 markdown 代码块。"},
         ],
         "temperature": 0.5,  # 0.2 太低导致所有 skill 都打同一组数字,提高 variance
-        "max_tokens": 8000,  # reasoning 模型 <think> 块可能吃 1500-3000,留余量给 JSON 输出
+        "max_tokens": 16000,  # reasoning 模型 <think> 块长,加厚 skill 内容多,给足空间防 JSON 截断
     }
     with httpx.Client(timeout=settings.llm_timeout) as c:
         r = c.post(url, headers=headers, json=body)
@@ -362,18 +362,33 @@ def inspect_skill(storage_path: str, **_ignore) -> dict:
 请严格按 system 中定义的 JSON schema 输出。
 """
 
-    try:
-        if settings.llm_provider == "anthropic":
-            parsed, _ = _call_anthropic(user_prompt)
-        else:
-            parsed, _ = _call_openai_compat(user_prompt)
-    except httpx.HTTPError as e:
+    # reasoning 模型输出有随机性,JSON 偶尔被 <think> 块挤截断 → 自动重试至多 3 次
+    parsed: dict = {}
+    last_err: Optional[Exception] = None
+    for attempt in range(3):
+        try:
+            if settings.llm_provider == "anthropic":
+                parsed, _ = _call_anthropic(user_prompt)
+            else:
+                parsed, _ = _call_openai_compat(user_prompt)
+        except httpx.HTTPError as e:
+            last_err = e
+            parsed = {}
+            continue
+        # 解析成功的标志:拿到非空 dimensions
+        if parsed.get("dimensions"):
+            break
+        # 否则视为截断 / 解析失败,重试下一轮
+
+    if not parsed.get("dimensions"):
+        reason = (f"LLM 调用失败: {type(last_err).__name__}: {last_err}"
+                  if last_err else "LLM 连续 3 次返回无法解析的内容(可能被 max_tokens 截断)")
         return {
             "score": 0,
             "verdict": "fail",
             "rating": "评估失败",
             "stars": 0,
-            "summary": f"LLM 调用失败: {type(e).__name__}: {e}",
+            "summary": reason,
             "dimensions": {},
             "suggestions": [],
             "clues": clues,
