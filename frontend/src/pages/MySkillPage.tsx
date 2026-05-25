@@ -287,9 +287,6 @@ function UploadVersionButton({ skill }: { skill: Skill }) {
           <button onClick={() => folderRef.current?.click()} className="w-full px-4 py-2.5 text-left text-sm text-zinc-200 hover:bg-white/[0.06]">
             上传整个文件夹
           </button>
-          <div className="px-4 py-2 text-[10px] text-zinc-500 border-t border-white/[0.06]">
-            覆盖现有内容并重跑 TRACE。安装次数 / 显示名等保留。
-          </div>
         </div>
       )}
       <input
@@ -344,11 +341,7 @@ function ExportButton({ skill }: { skill: Skill }) {
             className="block px-4 py-2.5 text-sm text-zinc-200 hover:bg-white/[0.06]"
           >
             导出为 <span className="font-mono text-iris-300">.skill</span>
-            <span className="block text-[10px] text-zinc-500 mt-0.5">部分 AI 客户端识别此后缀自动装</span>
           </a>
-          <div className="px-4 py-2 text-[10px] text-zinc-500 border-t border-white/[0.06]">
-            owner / admin 限定 · 不计 install_count
-          </div>
         </div>
       )}
     </div>
