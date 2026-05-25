@@ -124,6 +124,16 @@ class LoginIn(BaseModel):
     password: str
 
 
+def _iso(dt) -> Optional[str]:
+    """naive UTC datetime → ISO 8601 with 'Z' 后缀。
+
+    后端用 datetime.utcnow() 存 naive UTC,默认 .isoformat() 输出无 tz 标识 →
+    前端 new Date() 会按浏览器本地 TZ 误解,显示时间差 8 小时。加 'Z' 显式标 UTC,
+    浏览器自动转本地展示。dt 为 None 时返回 None。
+    """
+    return dt.isoformat() + 'Z' if dt else None
+
+
 class TokenOut(BaseModel):
     access_token: str
     token_type: str = "bearer"
@@ -164,14 +174,14 @@ def _skill_dict(s: Skill, owner: Optional[User] = None) -> dict:
         "size_bytes": s.size_bytes,
         "file_count": s.file_count,
         "is_published": s.is_published,
-        "published_at": s.published_at.isoformat() if s.published_at else None,
+        "published_at": _iso(s.published_at),
         "latest_score": s.latest_score,
         "latest_verdict": s.latest_verdict,
         "inspecting": s.inspecting_started_at is not None,
-        "inspecting_started_at": s.inspecting_started_at.isoformat() if s.inspecting_started_at else None,
+        "inspecting_started_at": _iso(s.inspecting_started_at),
         "view_count": s.view_count,
-        "created_at": s.created_at.isoformat(),
-        "updated_at": s.updated_at.isoformat(),
+        "created_at": _iso(s.created_at),
+        "updated_at": _iso(s.updated_at),
     }
 
 
@@ -553,8 +563,8 @@ async def list_versions(
                 "version": s.version or "—",
                 "file_count": s.file_count,
                 "size_bytes": s.size_bytes,
-                "created_at": s.created_at.isoformat(),
-                "published_at": s.published_at.isoformat() if s.published_at else None,
+                "created_at": _iso(s.created_at),
+                "published_at": _iso(s.published_at),
                 "is_current": True,
             }
         ]
@@ -771,7 +781,7 @@ def _report_dict(rpt: QualityReport) -> dict:
         "clues": (rpt.static_payload or {}),  # 复用 static_payload 字段存 clues
         "llm_model": rpt.llm_model,
         "duration_ms": rpt.duration_ms,
-        "created_at": rpt.created_at.isoformat(),
+        "created_at": _iso(rpt.created_at),
     }
 
 
@@ -836,9 +846,9 @@ async def list_invites(
                 "code": r.code,
                 "note": r.note,
                 "grants_admin": r.grants_admin,
-                "created_at": r.created_at.isoformat(),
-                "expires_at": r.expires_at.isoformat() if r.expires_at else None,
-                "used_at": r.used_at.isoformat() if r.used_at else None,
+                "created_at": _iso(r.created_at),
+                "expires_at": _iso(r.expires_at),
+                "used_at": _iso(r.used_at),
                 "used_by_username": users.get(r.used_by).username if r.used_by and users.get(r.used_by) else None,
                 "created_by_username": users.get(r.created_by).username if r.created_by and users.get(r.created_by) else None,
             }
@@ -866,7 +876,7 @@ async def create_invite(
     db.add(inv)
     await db.commit()
     await db.refresh(inv)
-    return {"code": inv.code, "id": str(inv.id), "expires_at": inv.expires_at.isoformat() if inv.expires_at else None}
+    return {"code": inv.code, "id": str(inv.id), "expires_at": _iso(inv.expires_at)}
 
 
 @app.delete("/api/admin/invites/{invite_id}")
@@ -899,7 +909,7 @@ async def list_users(
             {
                 **_user_dict(u),
                 "is_active": u.is_active,
-                "created_at": u.created_at.isoformat(),
+                "created_at": _iso(u.created_at),
                 "skill_count": skill_counts.get(u.id, 0),
             }
             for u in rows
@@ -948,7 +958,7 @@ async def admin_create_user(
     return {
         **_user_dict(u),
         "is_active": u.is_active,
-        "created_at": u.created_at.isoformat(),
+        "created_at": _iso(u.created_at),
         "skill_count": 0,
     }
 
@@ -995,7 +1005,7 @@ async def admin_patch_user(
     return {
         **_user_dict(u),
         "is_active": u.is_active,
-        "created_at": u.created_at.isoformat(),
+        "created_at": _iso(u.created_at),
     }
 
 
