@@ -8,6 +8,7 @@ interface AuthCtx {
   login: (identifier: string, password: string) => Promise<void>;
   register: (email: string, username: string, password: string, invite: string, displayName?: string) => Promise<void>;
   logout: () => void;
+  setUser: (u: AuthUser) => void;  // 用于用户自己改昵称 / 密码后局部刷新
 }
 
 const Ctx = createContext<AuthCtx | null>(null);
@@ -66,7 +67,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(null);
   }, []);
 
-  return <Ctx.Provider value={{ user, token, ready, login, register, logout }}>{children}</Ctx.Provider>;
+  const setUserAndPersist = useCallback((u: AuthUser) => {
+    setUser(u);
+    localStorage.setItem('skillhub_user', JSON.stringify(u));
+  }, []);
+
+  return (
+    <Ctx.Provider value={{ user, token, ready, login, register, logout, setUser: setUserAndPersist }}>
+      {children}
+    </Ctx.Provider>
+  );
 }
 
 export function useAuth() {

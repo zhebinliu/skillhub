@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Check, Copy, KeyRound, Loader2, Plus, Power, ShieldCheck, Trash2, Users } from 'lucide-react';
+import { Check, Copy, KeyRound, Loader2, Pencil, Plus, Power, ShieldCheck, Trash2, Users } from 'lucide-react';
 import { adminApi } from '../lib/api';
 import { useToast } from '../lib/toast';
 import { relTime } from '../lib/format';
@@ -238,6 +238,23 @@ function UsersTab() {
                 <div className="text-zinc-600">注册 {relTime(u.created_at)}</div>
               </div>
               <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => {
+                    const cur = u.display_name || u.username;
+                    const name = window.prompt(`为 ${u.username} 改昵称(1-64 字):`, cur);
+                    if (name != null) {
+                      const trimmed = name.trim();
+                      if (trimmed && trimmed !== cur) {
+                        patchMut.mutate({ id: u.id, body: { display_name: trimmed } });
+                      }
+                    }
+                  }}
+                  className="btn-quiet"
+                  title="改昵称"
+                  disabled={patchMut.isPending}
+                >
+                  <Pencil className="h-3.5 w-3.5" />
+                </button>
                 <button
                   onClick={() => patchMut.mutate({ id: u.id, body: { is_admin: !u.is_admin } })}
                   className="btn-quiet"

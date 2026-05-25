@@ -124,6 +124,8 @@ export const authApi = {
   login: (body: { identifier: string; password: string }) =>
     api.post<{ access_token: string; user: AuthUser }>('/api/auth/login', body).then((r) => r.data),
   me: () => api.get<AuthUser>('/api/auth/me').then((r) => r.data),
+  patchMe: (body: { display_name?: string; password?: string; old_password?: string }) =>
+    api.patch<AuthUser>('/api/auth/me', body).then((r) => r.data),
 };
 
 export const skillsApi = {

@@ -231,6 +231,33 @@ async def me(user: Annotated[User, Depends(get_current_user)]):
     return UserOut(**_user_dict(user))
 
 
+class MePatchIn(BaseModel):
+    display_name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    password: Optional[str] = Field(default=None, min_length=6, max_length=128)
+    old_password: Optional[str] = Field(default=None, min_length=1, max_length=128)
+
+
+@app.patch("/api/auth/me", response_model=UserOut)
+async def patch_me(
+    body: MePatchIn,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+):
+    """用户改自己的昵称 / 密码。改密码需提供旧密码。"""
+    from auth import verify_password
+    if body.password:
+        if not body.old_password:
+            raise HTTPException(400, "改密码必须提供旧密码")
+        if not verify_password(body.old_password, user.password_hash):
+            raise HTTPException(403, "旧密码不正确")
+        user.password_hash = hash_password(body.password)
+    if body.display_name is not None:
+        user.display_name = body.display_name.strip()
+    await db.commit()
+    await db.refresh(user)
+    return UserOut(**_user_dict(user))
+
+
 # ── skills: 列表 / 详情 / 文件 ────────────────────────────────────────────────
 @app.get("/api/skills")
 async def list_published(
