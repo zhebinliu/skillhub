@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom';
-import { FileCode2, Sparkles } from 'lucide-react';
+import { Download, FileCode2, Sparkles } from 'lucide-react';
 import { Skill } from '../lib/api';
 import { bytes, relTime, skillTitle, verdictMeta } from '../lib/format';
 
@@ -55,6 +55,15 @@ export default function SkillCard({ skill, to }: { skill: Skill; to?: string }) 
           <>
             <span>·</span>
             <span className="text-iris-400">v{skill.version}</span>
+          </>
+        )}
+        {(skill.install_count || 0) > 0 && (
+          <>
+            <span>·</span>
+            <span className="inline-flex items-center gap-1" title="安装次数">
+              <Download className="h-3 w-3" />
+              {skill.install_count}
+            </span>
           </>
         )}
       </div>

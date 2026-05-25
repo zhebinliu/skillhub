@@ -71,6 +71,9 @@ class Skill(Base):
     latest_verdict: Mapped[str | None] = mapped_column(String(32))
     inspecting_started_at: Mapped[datetime | None] = mapped_column(DateTime)  # 后台评测中标记
 
+    # 安装次数:每次有人下载了 zip 就 +1(不区分匿名/登录)
+    install_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+
     view_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)

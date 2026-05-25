@@ -12,6 +12,7 @@ export default function UploadPage() {
   const [mode, setMode] = useState<Mode>('archive');
   const [drag, setDrag] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [version, setVersion] = useState('');
   const archiveRef = useRef<HTMLInputElement>(null);
   const folderRef = useRef<HTMLInputElement>(null);
 
@@ -19,7 +20,7 @@ export default function UploadPage() {
     if (busy) return;
     setBusy(true);
     try {
-      const { skill } = await skillsApi.uploadZip(file, file.name);
+      const { skill } = await skillsApi.uploadZip(file, file.name, version.trim() || undefined);
       toast('已收到,TRACE 自动评测开始(30-90 秒)', 'success');
       nav(`/dashboard/skill/${skill.id}`);
     } catch (err: any) {
@@ -40,7 +41,7 @@ export default function UploadPage() {
     const nameHint = allShare ? firstSeg : undefined;
     setBusy(true);
     try {
-      const { skill } = await skillsApi.uploadFiles(arr, norm, nameHint);
+      const { skill } = await skillsApi.uploadFiles(arr, norm, nameHint, version.trim() || undefined);
       toast('已收到,TRACE 自动评测开始(30-90 秒)', 'success');
       nav(`/dashboard/skill/${skill.id}`);
     } catch (err: any) {
@@ -67,6 +68,21 @@ export default function UploadPage() {
     <div className="mx-auto max-w-3xl px-6 py-12">
       <h1 className="text-3xl font-semibold heading-display">上传 skill</h1>
       <p className="text-sm text-zinc-500 mt-1 mb-6">默认存为草稿。预览 + 质检过后再决定要不要发布。</p>
+
+      {/* 版本号(可选) */}
+      <div className="mb-6 max-w-xs">
+        <div className="label mb-1.5">版本号(可选)</div>
+        <input
+          value={version}
+          onChange={(e) => setVersion(e.target.value)}
+          placeholder="比如 1.0.0 / v0.2-beta / 2026-05"
+          className="input font-mono"
+        />
+        <div className="text-[11px] text-zinc-500 mt-1.5">
+          留空则用 SKILL.md frontmatter 里的 <code className="text-iris-300">version</code>。
+          填了优先用你这里的。
+        </div>
+      </div>
 
       <div className="flex gap-1 p-1 rounded-full glass w-fit mb-6">
         <button

@@ -54,6 +54,7 @@ export interface Skill {
   inspecting?: boolean;
   inspecting_started_at?: string | null;
   view_count: number;
+  install_count?: number;
   created_at: string;
   updated_at: string;
 }
@@ -142,18 +143,33 @@ export const skillsApi = {
       size: number; full_size: number; truncated: boolean;
     }>(`/api/skills/${id}/file`, { params: { path } }).then((r) => r.data),
   reports: (id: string) => api.get<{ items: Report[] }>(`/api/skills/${id}/reports`).then((r) => r.data),
-  uploadZip: (file: File, nameHint?: string) => {
+  uploadZip: (file: File, nameHint?: string, version?: string) => {
     const fd = new FormData();
     fd.append('archive', file);
     if (nameHint) fd.append('name_hint', nameHint);
+    if (version) fd.append('version', version);
     return api.post<{ skill: Skill }>('/api/skills/upload', fd).then((r) => r.data);
   },
-  uploadFiles: (files: File[], paths: string[], nameHint?: string) => {
+  uploadFiles: (files: File[], paths: string[], nameHint?: string, version?: string) => {
     const fd = new FormData();
     files.forEach((f) => fd.append('files', f));
     paths.forEach((p) => fd.append('paths', p));
     if (nameHint) fd.append('name_hint', nameHint);
+    if (version) fd.append('version', version);
     return api.post<{ skill: Skill }>('/api/skills/upload-files', fd).then((r) => r.data);
+  },
+  uploadVersionZip: (id: string, file: File, version?: string) => {
+    const fd = new FormData();
+    fd.append('archive', file);
+    if (version) fd.append('version', version);
+    return api.post<{ skill: Skill }>(`/api/skills/${id}/upload-version`, fd).then((r) => r.data);
+  },
+  uploadVersionFiles: (id: string, files: File[], paths: string[], version?: string) => {
+    const fd = new FormData();
+    files.forEach((f) => fd.append('files', f));
+    paths.forEach((p) => fd.append('paths', p));
+    if (version) fd.append('version', version);
+    return api.post<{ skill: Skill }>(`/api/skills/${id}/upload-version`, fd).then((r) => r.data);
   },
   publish: (id: string, publish: boolean) =>
     api.post<{ skill: Skill }>(`/api/skills/${id}/publish`, null, { params: { publish } }).then((r) => r.data),
@@ -165,7 +181,9 @@ export const skillsApi = {
     api.get<InstallInstructions>(`/api/skills/${id}/install`).then((r) => r.data),
   versions: (id: string) =>
     api.get<{ items: SkillVersion[] }>(`/api/skills/${id}/versions`).then((r) => r.data),
-  downloadUrl: (id: string) => `/api/skills/${id}/download`,
+  downloadUrl: (id: string) => `/api/skills/${id}/download`,         // 公开安装入口(会计 install_count)
+  exportUrl: (id: string, format: 'zip' | 'skill' = 'zip') =>
+    `/api/skills/${id}/export?format=${format}`,                      // owner/admin 导出(不计数)
   rawUrl: (id: string, path: string) => `/api/skills/${id}/raw?path=${encodeURIComponent(path)}`,
   remove: (id: string) => api.delete(`/api/skills/${id}`).then((r) => r.data),
 };

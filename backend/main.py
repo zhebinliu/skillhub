@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
             "CREATE INDEX IF NOT EXISTS ix_quality_reports_mode ON quality_reports (mode)",
             "ALTER TABLE skills ADD COLUMN IF NOT EXISTS inspecting_started_at TIMESTAMP",
             "ALTER TABLE skills ADD COLUMN IF NOT EXISTS display_name VARCHAR(128)",
+            "ALTER TABLE skills ADD COLUMN IF NOT EXISTS install_count INTEGER NOT NULL DEFAULT 0",
         ):
             await conn.exec_driver_sql(stmt)
     try:
@@ -180,6 +181,7 @@ def _skill_dict(s: Skill, owner: Optional[User] = None) -> dict:
         "inspecting": s.inspecting_started_at is not None,
         "inspecting_started_at": _iso(s.inspecting_started_at),
         "view_count": s.view_count,
+        "install_count": s.install_count or 0,
         "created_at": _iso(s.created_at),
         "updated_at": _iso(s.updated_at),
     }
@@ -506,40 +508,88 @@ echo "✓ 已装到 $SKILL_DIR/{slug}/"
     }
 
 
+def _build_skill_zip(s: Skill) -> "io.BytesIO":
+    """把 skill 目录打包成 zip(bytesio),顶层目录用 slug。"""
+    import io
+    import zipfile
+    from storage import skill_dir as _skill_dir
+    base = _skill_dir(s.storage_path)
+    if not base.exists():
+        raise HTTPException(404, "skill 文件不存在")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in base.rglob("*"):
+            if f.is_file():
+                zf.write(f, arcname=f"{s.slug}/{f.relative_to(base)}")
+    buf.seek(0)
+    return buf
+
+
 @app.get("/api/skills/{skill_id}/download")
 async def download_skill(
     skill_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_session)],
     viewer: Annotated[Optional[User], Depends(get_optional_user)],
 ):
-    """流式打包 skill 目录为 zip 返回。"""
-    import io
-    import zipfile
+    """安装下载入口 — 每次访问 install_count + 1。
 
+    访问条件:
+      - 已发布的 skill → 任何人可下(计数);AI 助手按 install prompt 触发
+      - 草稿 → 仅 owner/admin 可下(也不计数,见下)
+
+    注:这是「安装」语义,不是「源码导出」。owner/admin 想拿源应该走
+    /api/skills/{id}/export(不计数)。
+    """
     s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
     if not s:
         raise HTTPException(404, "skill 不存在")
-    if not s.is_published:
-        is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
-        if not is_owner:
-            raise HTTPException(404, "skill 不存在")
+    is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
+    if not s.is_published and not is_owner:
+        raise HTTPException(404, "skill 不存在")
 
-    from storage import skill_dir as _skill_dir
-    base = _skill_dir(s.storage_path)
-    if not base.exists():
-        raise HTTPException(404, "文件不存在")
+    buf = _build_skill_zip(s)
 
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for f in base.rglob("*"):
-            if f.is_file():
-                # 顶层目录用 slug 而非 storage_path(UUID),解压更友好
-                zf.write(f, arcname=f"{s.slug}/{f.relative_to(base)}")
-    buf.seek(0)
+    # 只对已发布 skill 的「非自己人下载」计数 — 自己测下载不算 install
+    if s.is_published and not is_owner:
+        s.install_count = (s.install_count or 0) + 1
+        await db.commit()
+
     return StreamingResponse(
         buf,
         media_type="application/zip",
         headers={"Content-Disposition": f'attachment; filename="{s.slug}.zip"'},
+    )
+
+
+@app.get("/api/skills/{skill_id}/export")
+async def export_skill(
+    skill_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    user: User = Depends(get_current_user),
+    format: str = Query("zip", pattern="^(zip|skill)$"),
+):
+    """导出 skill 源码 — owner/admin 专用,**不**计 install_count。
+
+    format=zip   → 标准 .zip 文件(application/zip)
+    format=skill → .skill 扩展名(内容仍是 zip;某些 AI 客户端识别此后缀自动装)
+    """
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if s.owner_id != user.id and not user.is_admin:
+        raise HTTPException(403, "仅 owner 或 admin 可导出")
+
+    buf = _build_skill_zip(s)
+    if format == "skill":
+        filename = f"{s.slug}.skill"
+        mime = "application/octet-stream"
+    else:
+        filename = f"{s.slug}.zip"
+        mime = "application/zip"
+    return StreamingResponse(
+        buf,
+        media_type=mime,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -565,6 +615,7 @@ async def list_versions(
                 "size_bytes": s.size_bytes,
                 "created_at": _iso(s.created_at),
                 "published_at": _iso(s.published_at),
+                "install_count": s.install_count or 0,
                 "is_current": True,
             }
         ]
@@ -578,8 +629,9 @@ async def upload_skill(
     db: Annotated[AsyncSession, Depends(get_session)],
     archive: UploadFile | None = File(None),
     name_hint: str | None = Form(None),
+    version: str | None = Form(None),
 ):
-    """上传 zip / tar.gz 单包形式。"""
+    """上传 zip / tar.gz 单包形式。version 优先级:body > frontmatter。"""
     if archive is None:
         raise HTTPException(400, "缺少 archive 文件")
     raw = await archive.read()
@@ -598,6 +650,8 @@ async def upload_skill(
         remove_skill(storage_path)
         raise HTTPException(400, "仅支持 .zip / .tar.gz / .tgz")
 
+    if version and version.strip():
+        summary["version"] = version.strip()
     skill = await _create_skill(db, user, storage_path, summary, name_hint=name_hint or archive.filename)
     return {"skill": _skill_dict(skill, user)}
 
@@ -609,8 +663,9 @@ async def upload_skill_files(
     files: list[UploadFile] = File(...),
     paths: list[str] = Form(...),
     name_hint: str | None = Form(None),
+    version: str | None = Form(None),
 ):
-    """多文件 + 各自相对路径(配 webkitdirectory)。"""
+    """多文件 + 各自相对路径(配 webkitdirectory)。version 优先级:body > frontmatter。"""
     if len(files) != len(paths):
         raise HTTPException(400, "files / paths 长度不匹配")
     payload: list[tuple[str, bytes]] = []
@@ -624,8 +679,114 @@ async def upload_skill_files(
         payload.append((p, b))
     storage_path = new_storage_path()
     summary = write_files(payload, storage_path)
+    if version and version.strip():
+        summary["version"] = version.strip()
     skill = await _create_skill(db, user, storage_path, summary, name_hint=name_hint)
     return {"skill": _skill_dict(skill, user)}
+
+
+@app.post("/api/skills/{skill_id}/upload-version")
+async def upload_new_version(
+    skill_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+    archive: UploadFile | None = File(None),
+    files: list[UploadFile] | None = File(None),
+    paths: list[str] | None = Form(None),
+    version: str | None = Form(None),
+):
+    """在已有 skill 上重新上传内容(新版本)。
+
+    前置条件:
+      - owner 或 admin
+      - skill **必须先下架**(is_published=false),已发布的不能直接覆盖,
+        防止用户拿到的版本悄悄变。需先 publish=false 再调本端点。
+
+    上传成功后:旧 storage 删除 → 新 storage 替换 → 重新跑 TRACE 评测 →
+    skill 的 size / file_count / version / entry_file 全部更新,但 slug /
+    display_name / install_count / view_count 保持不变(版本概念,不是新 skill)。
+    """
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if s.owner_id != user.id and not user.is_admin:
+        raise HTTPException(403, "无权限")
+    if s.is_published:
+        raise HTTPException(400, "已发布的 skill 不能直接覆盖。请先「撤回发布」回到草稿状态再上传新版本")
+
+    # 解新包到独立路径(避免解压失败时旧内容被破坏)
+    new_storage = new_storage_path()
+    max_bytes = settings.max_skill_size_mb * 1024 * 1024
+    try:
+        if archive is not None:
+            raw = await archive.read()
+            if not raw:
+                raise HTTPException(400, "文件为空")
+            if len(raw) > max_bytes:
+                raise HTTPException(413, f"压缩包超过 {settings.max_skill_size_mb}MB")
+            fname = (archive.filename or "").lower()
+            if fname.endswith(".zip") or raw[:2] == b"PK":
+                summary = extract_zip(raw, new_storage)
+            elif fname.endswith((".tar", ".tar.gz", ".tgz", ".tar.bz2")) or raw[:2] in (b"\x1f\x8b", b"BZ"):
+                summary = extract_tar(raw, new_storage)
+            else:
+                remove_skill(new_storage)
+                raise HTTPException(400, "仅支持 .zip / .tar.gz / .tgz")
+        elif files and paths:
+            if len(files) != len(paths):
+                raise HTTPException(400, "files / paths 长度不匹配")
+            payload: list[tuple[str, bytes]] = []
+            total = 0
+            for f, p in zip(files, paths):
+                b = await f.read()
+                total += len(b)
+                if total > max_bytes:
+                    raise HTTPException(413, f"总大小超过 {settings.max_skill_size_mb}MB")
+                payload.append((p, b))
+            summary = write_files(payload, new_storage)
+        else:
+            raise HTTPException(400, "缺少上传内容(archive 或 files)")
+    except Exception:
+        # 任何错就清新 storage,旧 storage 不动
+        try:
+            remove_skill(new_storage)
+        except Exception:
+            pass
+        raise
+
+    if version and version.strip():
+        summary["version"] = version.strip()
+
+    # 切换:先记下旧 storage,再换 skill 字段,最后删旧
+    old_storage = s.storage_path
+    s.storage_path = new_storage
+    s.name = summary.get("name") or s.name  # frontmatter 有就更新
+    # display_name 用户可能已经手动设过,新版 frontmatter 没写就别覆盖
+    if summary.get("display_name"):
+        s.display_name = summary["display_name"]
+    if summary.get("description"):
+        s.description = summary["description"]
+    if summary.get("version"):
+        s.version = summary["version"]
+    s.entry_file = summary.get("entry_file") or s.entry_file or "SKILL.md"
+    s.size_bytes = summary.get("size_bytes") or 0
+    s.file_count = summary.get("file_count") or 0
+    # 重置评测
+    s.latest_score = None
+    s.latest_verdict = None
+    s.inspecting_started_at = datetime.utcnow()
+    s.updated_at = datetime.utcnow()
+    await db.commit()
+    await db.refresh(s)
+
+    # 删旧文件 + 启后台评测
+    try:
+        remove_skill(old_storage)
+    except Exception:
+        logger.exception("删除旧 storage 失败(忽略):%s", old_storage)
+    asyncio.create_task(_auto_inspect(s.id, s.storage_path))
+
+    return {"skill": _skill_dict(s, user)}
 
 
 async def _create_skill(

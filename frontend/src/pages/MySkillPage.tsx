@@ -1,10 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { useRef } from 'react';
 import {
-  ArrowLeft, ExternalLink, Eye, EyeOff, GaugeCircle, Loader2, Pencil, Trash2,
+  ArrowLeft, ChevronDown, Download, ExternalLink, Eye, EyeOff, GaugeCircle,
+  Loader2, Pencil, Trash2, Upload,
 } from 'lucide-react';
-import { skillsApi } from '../lib/api';
+import { Skill, skillsApi } from '../lib/api';
 import FileTree from '../components/FileTree';
 import FilePreview from '../components/FilePreview';
 import TraceReportView from '../components/TraceReportView';
@@ -157,6 +159,8 @@ export default function MySkillPage() {
             {s.is_published ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
             {s.is_published ? '撤回发布' : '发布到广场'}
           </button>
+          <UploadVersionButton skill={s} />
+          <ExportButton skill={s} />
           <Link to={`/skill/${s.id}`} className="btn-ghost" title="预览公开页">
             <ExternalLink className="h-4 w-4" />
           </Link>
@@ -205,6 +209,148 @@ export default function MySkillPage() {
           <FilePreview skillId={s.id} path={selected} />
         </section>
       </div>
+    </div>
+  );
+}
+
+// ── 上传新版本按钮 ──────────────────────────────────────────────────────────
+// 仅草稿(is_published=false)时可点。已发布的 skill 必须先撤回发布,防止用户
+// 拿到的版本悄悄变。
+function UploadVersionButton({ skill }: { skill: Skill }) {
+  const qc = useQueryClient();
+  const toast = useToast();
+  const fileRef = useRef<HTMLInputElement>(null);
+  const folderRef = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const disabled = skill.is_published;
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  async function submitZip(file: File) {
+    const version = window.prompt(`新版本号(可选,留空用 frontmatter 里的;当前 v${skill.version || '—'}):`, '');
+    if (version === null) return; // 用户取消
+    setBusy(true); setOpen(false);
+    try {
+      await skillsApi.uploadVersionZip(skill.id, file, version.trim() || undefined);
+      toast('新版本已收到,TRACE 自动评测中', 'success');
+      qc.invalidateQueries({ queryKey: ['skill', skill.id] });
+      qc.invalidateQueries({ queryKey: ['reports', skill.id] });
+    } catch (err: any) {
+      toast(err?.response?.data?.detail || '上传失败', 'error');
+    } finally { setBusy(false); }
+  }
+
+  async function submitFolder(files: FileList) {
+    const version = window.prompt(`新版本号(可选,留空用 frontmatter 里的;当前 v${skill.version || '—'}):`, '');
+    if (version === null) return;
+    const arr = Array.from(files);
+    const paths = arr.map((f: any) => f.webkitRelativePath || f.name);
+    const firstSeg = paths[0]?.split('/')[0];
+    const allShare = firstSeg && paths.every((p) => p.split('/')[0] === firstSeg);
+    const norm = allShare ? paths.map((p) => p.slice(firstSeg.length + 1)) : paths;
+    setBusy(true); setOpen(false);
+    try {
+      await skillsApi.uploadVersionFiles(skill.id, arr, norm, version.trim() || undefined);
+      toast('新版本已收到,TRACE 自动评测中', 'success');
+      qc.invalidateQueries({ queryKey: ['skill', skill.id] });
+      qc.invalidateQueries({ queryKey: ['reports', skill.id] });
+    } catch (err: any) {
+      toast(err?.response?.data?.detail || '上传失败', 'error');
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button
+        onClick={() => disabled ? toast('已发布的 skill 不能直接覆盖。先点「撤回发布」', 'error') : setOpen(!open)}
+        disabled={busy}
+        className={`btn-ghost ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
+        title={disabled ? '需先撤回发布' : '上传新版本'}
+      >
+        {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+        新版本
+        <ChevronDown className="h-3 w-3 -mr-1" />
+      </button>
+      {open && !disabled && (
+        <div className="absolute right-0 mt-2 w-56 rounded-xl bg-ink-900/95 backdrop-blur-xl border border-white/10 shadow-glow overflow-hidden z-50">
+          <button onClick={() => fileRef.current?.click()} className="w-full px-4 py-2.5 text-left text-sm text-zinc-200 hover:bg-white/[0.06]">
+            上传 zip / tar.gz 包
+          </button>
+          <button onClick={() => folderRef.current?.click()} className="w-full px-4 py-2.5 text-left text-sm text-zinc-200 hover:bg-white/[0.06]">
+            上传整个文件夹
+          </button>
+          <div className="px-4 py-2 text-[10px] text-zinc-500 border-t border-white/[0.06]">
+            覆盖现有内容并重跑 TRACE。安装次数 / 显示名等保留。
+          </div>
+        </div>
+      )}
+      <input
+        ref={fileRef} type="file" className="hidden"
+        accept=".zip,.tar,.tar.gz,.tgz,application/zip,application/gzip,application/x-tar"
+        onChange={(e) => { const f = e.target.files?.[0]; if (f) submitZip(f); e.target.value = ''; }}
+      />
+      <input
+        ref={folderRef} type="file" className="hidden"
+        // @ts-ignore
+        webkitdirectory="true" directory="" multiple
+        onChange={(e) => { const fs = e.target.files; if (fs && fs.length) submitFolder(fs); e.target.value = ''; }}
+      />
+    </div>
+  );
+}
+
+// ── 导出按钮(owner / admin 不计 install_count)──────────────────────────────
+function ExportButton({ skill }: { skill: Skill }) {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function onDocClick(e: MouseEvent) {
+      if (wrapRef.current && !wrapRef.current.contains(e.target as Node)) setOpen(false);
+    }
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, []);
+
+  return (
+    <div ref={wrapRef} className="relative">
+      <button onClick={() => setOpen(!open)} className="btn-ghost" title="导出 skill 源码(不计安装次数)">
+        <Download className="h-4 w-4" />
+        导出
+        <ChevronDown className="h-3 w-3 -mr-1" />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-2 w-52 rounded-xl bg-ink-900/95 backdrop-blur-xl border border-white/10 shadow-glow overflow-hidden z-50">
+          <a
+            href={skillsApi.exportUrl(skill.id, 'zip')}
+            download={`${skill.slug}.zip`}
+            onClick={() => setOpen(false)}
+            className="block px-4 py-2.5 text-sm text-zinc-200 hover:bg-white/[0.06]"
+          >
+            导出为 <span className="font-mono text-iris-300">.zip</span>
+          </a>
+          <a
+            href={skillsApi.exportUrl(skill.id, 'skill')}
+            download={`${skill.slug}.skill`}
+            onClick={() => setOpen(false)}
+            className="block px-4 py-2.5 text-sm text-zinc-200 hover:bg-white/[0.06]"
+          >
+            导出为 <span className="font-mono text-iris-300">.skill</span>
+            <span className="block text-[10px] text-zinc-500 mt-0.5">部分 AI 客户端识别此后缀自动装</span>
+          </a>
+          <div className="px-4 py-2 text-[10px] text-zinc-500 border-t border-white/[0.06]">
+            owner / admin 限定 · 不计 install_count
+          </div>
+        </div>
+      )}
     </div>
   );
 }
