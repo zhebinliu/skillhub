@@ -2,13 +2,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, ExternalLink, Eye, EyeOff, GaugeCircle, Loader2, Trash2,
+  ArrowLeft, ExternalLink, Eye, EyeOff, GaugeCircle, Loader2, Pencil, Trash2,
 } from 'lucide-react';
 import { skillsApi } from '../lib/api';
 import FileTree from '../components/FileTree';
 import FilePreview from '../components/FilePreview';
 import TraceReportView from '../components/TraceReportView';
-import { bytes, relTime, verdictMeta } from '../lib/format';
+import { bytes, relTime, skillTitle, verdictMeta } from '../lib/format';
 import { useToast } from '../lib/toast';
 
 export default function MySkillPage() {
@@ -67,6 +67,17 @@ export default function MySkillPage() {
     onError: (err: any) => toast(err?.response?.data?.detail || '删除失败', 'error'),
   });
 
+  const patchMut = useMutation({
+    mutationFn: (body: { display_name?: string; description?: string }) => skillsApi.patch(id!, body),
+    onSuccess: () => {
+      toast('已更新', 'success');
+      qc.invalidateQueries({ queryKey: ['skill', id] });
+      qc.invalidateQueries({ queryKey: ['skills', 'mine'] });
+      qc.invalidateQueries({ queryKey: ['skills', 'landing'] });
+    },
+    onError: (err: any) => toast(err?.response?.data?.detail || '更新失败', 'error'),
+  });
+
   if (error) {
     return <div className="p-12 text-center text-rose-300">无权限或 skill 不存在</div>;
   }
@@ -86,7 +97,22 @@ export default function MySkillPage() {
       <div className="flex items-start justify-between gap-4 flex-wrap mb-6">
         <div className="min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
-            <h1 className="text-2xl font-bold heading-display">{s.name}</h1>
+            <h1 className="text-2xl font-bold heading-display">{skillTitle(s)}</h1>
+            <button
+              onClick={() => {
+                const cur = s.display_name || '';
+                const name = window.prompt('改这个 skill 的显示名(中文,留空恢复用技术名):', cur);
+                if (name == null) return;
+                const trimmed = name.trim();
+                if (trimmed === cur) return;
+                patchMut.mutate({ display_name: trimmed });
+              }}
+              className="text-zinc-500 hover:text-zinc-200 transition-colors"
+              title="改显示名"
+              disabled={patchMut.isPending}
+            >
+              <Pencil className="h-4 w-4" />
+            </button>
             {s.is_published ? (
               <span className="chip text-emerald-300 ring-1 ring-emerald-400/30 bg-emerald-400/10">
                 <Eye className="h-3 w-3" /> 已发布
@@ -107,7 +133,10 @@ export default function MySkillPage() {
             )}
           </div>
           <div className="text-xs text-zinc-500 mt-1 font-mono">
-            {s.slug} {s.version && <span className="text-iris-400 ml-2">v{s.version}</span>}
+            <span title="技术名(SKILL.md frontmatter)">{s.name}</span>
+            <span className="text-zinc-700 mx-1.5">·</span>
+            {s.slug}
+            {s.version && <span className="text-iris-400 ml-2">v{s.version}</span>}
           </div>
         </div>
 

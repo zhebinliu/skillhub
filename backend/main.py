@@ -80,6 +80,7 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE quality_reports ADD COLUMN IF NOT EXISTS llm_payload JSONB",
             "CREATE INDEX IF NOT EXISTS ix_quality_reports_mode ON quality_reports (mode)",
             "ALTER TABLE skills ADD COLUMN IF NOT EXISTS inspecting_started_at TIMESTAMP",
+            "ALTER TABLE skills ADD COLUMN IF NOT EXISTS display_name VARCHAR(128)",
         ):
             await conn.exec_driver_sql(stmt)
     try:
@@ -155,6 +156,7 @@ def _skill_dict(s: Skill, owner: Optional[User] = None) -> dict:
         "owner_display_name": owner.display_name if owner else None,
         "slug": s.slug,
         "name": s.name,
+        "display_name": s.display_name,
         "description": s.description,
         "version": s.version,
         "tags": s.tags or [],
@@ -633,6 +635,7 @@ async def _create_skill(
         owner_id=user.id,
         slug=slug,
         name=summary.get("name") or raw_name,
+        display_name=summary.get("display_name"),  # frontmatter 里有就用,没有就空(UI fallback 到 name)
         description=summary.get("description"),
         version=summary.get("version"),
         storage_path=storage_path,
@@ -686,6 +689,35 @@ async def _auto_inspect(skill_id: uuid.UUID, storage_path: str) -> None:
                     await db.commit()
         except Exception:
             pass
+
+
+class SkillPatchIn(BaseModel):
+    display_name: Optional[str] = Field(default=None, max_length=128)
+    description: Optional[str] = Field(default=None, max_length=4096)
+
+
+@app.patch("/api/skills/{skill_id}")
+async def patch_skill(
+    skill_id: uuid.UUID,
+    body: SkillPatchIn,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+):
+    """改 skill 的显示名 / 简介。owner 或 admin 可改。空串=清空回退到 frontmatter。"""
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if s.owner_id != user.id and not user.is_admin:
+        raise HTTPException(403, "无权限")
+    if body.display_name is not None:
+        v = body.display_name.strip()
+        s.display_name = v or None
+    if body.description is not None:
+        v = body.description.strip()
+        s.description = v or None
+    await db.commit()
+    await db.refresh(s)
+    return {"skill": _skill_dict(s, user)}
 
 
 @app.post("/api/skills/{skill_id}/publish")

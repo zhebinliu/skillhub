@@ -1,3 +1,9 @@
+/** skill 显示名:优先 display_name(中文),否则 fallback 到 name(英文 slug)。 */
+export function skillTitle(s: { display_name?: string | null; name: string } | null | undefined): string {
+  if (!s) return '';
+  return (s.display_name && s.display_name.trim()) || s.name;
+}
+
 export function bytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;

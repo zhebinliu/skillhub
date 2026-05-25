@@ -2,7 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Eye, EyeOff, FileCode2, Plus, Upload } from 'lucide-react';
 import { skillsApi } from '../lib/api';
-import { bytes, relTime, verdictMeta } from '../lib/format';
+import { bytes, relTime, skillTitle, verdictMeta } from '../lib/format';
 import { useAuth } from '../lib/auth';
 
 export default function DashboardPage() {
@@ -58,7 +58,7 @@ export default function DashboardPage() {
                 className="group relative surface p-5 hover:border-white/20 hover:-translate-y-0.5 transition-all"
               >
                 <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="font-semibold heading-display truncate">{s.name}</h3>
+                  <h3 className="font-semibold heading-display truncate">{skillTitle(s)}</h3>
                   {s.is_published ? (
                     <span className="chip text-emerald-300 ring-1 ring-emerald-400/30 bg-emerald-400/10">
                       <Eye className="h-3 w-3" />

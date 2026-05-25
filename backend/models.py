@@ -51,7 +51,8 @@ class Skill(Base):
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=_uuid)
     owner_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     slug: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
-    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)  # 技术名(SKILL.md frontmatter,通常英文 slug 化)
+    display_name: Mapped[str | None] = mapped_column(String(128))   # 中文显示名,UI 优先用
     description: Mapped[str | None] = mapped_column(Text)
     version: Mapped[str | None] = mapped_column(String(32))
     tags: Mapped[list | None] = mapped_column(JSON, default=list)

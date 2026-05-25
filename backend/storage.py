@@ -255,11 +255,18 @@ def _summarize(base: Path) -> dict:
     name = None
     description = None
     version = None
+    display_name = None
     if skill_md:
         meta = _parse_frontmatter(skill_md)
         name = meta.get("name") or None
         description = meta.get("description") or None
         version = str(meta.get("version")) if meta.get("version") else None
+        # 多个字段名都接受作为「显示名」:display_name / title / chinese_name / cn_name
+        for k in ("display_name", "title", "chinese_name", "cn_name"):
+            v = meta.get(k)
+            if v:
+                display_name = str(v).strip()
+                break
 
     rel_entry = str(skill_md.relative_to(base)) if skill_md else None
     return {
@@ -267,6 +274,7 @@ def _summarize(base: Path) -> dict:
         "size_bytes": total,
         "entry_file": rel_entry,
         "name": name,
+        "display_name": display_name,
         "description": description,
         "version": version,
     }

@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { FileCode2, Sparkles } from 'lucide-react';
 import { Skill } from '../lib/api';
-import { bytes, relTime, verdictMeta } from '../lib/format';
+import { bytes, relTime, skillTitle, verdictMeta } from '../lib/format';
 
 export default function SkillCard({ skill, to }: { skill: Skill; to?: string }) {
   const v = verdictMeta(skill.latest_verdict);
@@ -16,7 +16,7 @@ export default function SkillCard({ skill, to }: { skill: Skill; to?: string }) 
       <div className="flex items-start justify-between gap-3 mb-3">
         <div className="min-w-0">
           <h3 className="text-lg font-semibold heading-display tracking-tight truncate group-hover:text-iris-200 transition-colors">
-            {skill.name}
+            {skillTitle(skill)}
           </h3>
           <div className="text-xs text-zinc-500 mt-0.5 truncate font-mono">
             {skill.owner_display_name || skill.owner_username || '—'} / {skill.slug}

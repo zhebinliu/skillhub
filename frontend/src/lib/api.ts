@@ -39,7 +39,8 @@ export interface Skill {
   owner_username?: string | null;
   owner_display_name?: string | null;
   slug: string;
-  name: string;
+  name: string;                       // 技术名(SKILL.md frontmatter,通常英文)
+  display_name?: string | null;       // 中文显示名,UI 优先展示;空则 fallback 到 name
   description?: string | null;
   version?: string | null;
   tags?: string[];
@@ -158,6 +159,8 @@ export const skillsApi = {
     api.post<{ skill: Skill }>(`/api/skills/${id}/publish`, null, { params: { publish } }).then((r) => r.data),
   inspect: (id: string) =>
     api.post<{ report: Report }>(`/api/skills/${id}/inspect`).then((r) => r.data),
+  patch: (id: string, body: { display_name?: string; description?: string }) =>
+    api.patch<{ skill: Skill }>(`/api/skills/${id}`, body).then((r) => r.data),
   install: (id: string) =>
     api.get<InstallInstructions>(`/api/skills/${id}/install`).then((r) => r.data),
   versions: (id: string) =>

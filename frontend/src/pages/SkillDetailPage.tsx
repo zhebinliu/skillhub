@@ -8,7 +8,7 @@ import InstallTab from '../components/InstallTab';
 import VersionsTab from '../components/VersionsTab';
 import ReportTab from '../components/ReportTab';
 import { useAuth } from '../lib/auth';
-import { bytes, relTime, verdictMeta } from '../lib/format';
+import { bytes, relTime, skillTitle, verdictMeta } from '../lib/format';
 
 type Tab = 'overview' | 'install' | 'versions' | 'report';
 
@@ -54,9 +54,11 @@ export default function SkillDetailPage() {
       <div className="mb-6">
         <div className="flex items-start justify-between gap-4 flex-wrap">
           <div className="min-w-0 flex-1">
-            <h1 className="text-3xl font-bold heading-display tracking-tight">{s.name}</h1>
+            <h1 className="text-3xl font-bold heading-display tracking-tight">{skillTitle(s)}</h1>
             <div className="text-sm text-zinc-500 mt-1 font-mono">
-              {s.owner_display_name || s.owner_username} <span className="text-zinc-700 mx-1">/</span> {s.slug}
+              {s.owner_display_name || s.owner_username}
+              <span className="text-zinc-700 mx-1">/</span>
+              <span title="技术名(英文)">{s.name}</span>
               {s.version && <span className="ml-2 text-iris-400">v{s.version}</span>}
             </div>
             {s.description && (
