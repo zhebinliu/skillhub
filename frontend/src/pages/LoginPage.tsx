@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useAuth } from '../lib/auth';
 import { useToast } from '../lib/toast';
 
@@ -7,6 +7,8 @@ export default function LoginPage() {
   const { login } = useAuth();
   const toast = useToast();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  const next = params.get('next') || '/dashboard';
   const [id, setId] = useState('');
   const [pwd, setPwd] = useState('');
   const [loading, setLoading] = useState(false);
@@ -18,7 +20,7 @@ export default function LoginPage() {
     try {
       await login(id, pwd);
       toast('登录成功', 'success');
-      nav('/dashboard');
+      nav(next);
     } catch (err: any) {
       toast(err?.response?.data?.detail || '登录失败', 'error');
     } finally {

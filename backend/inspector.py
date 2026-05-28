@@ -427,6 +427,289 @@ def inspect_skill(storage_path: str, **_ignore) -> dict:
     }
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# 蜂巢评测(独立模式,与 TRACE 互补)
+# ──────────────────────────────────────────────────────────────────────────────
+BEEHIVE_SYSTEM_PROMPT = """你是蜂巢平台(ShareClaw)的 Skill 评审专家,基于《蜂巢平台 Skill 设计规范手册》对用户提交的 Skill 做规范层面的系统化评审。
+
+⚠ 核心原则 — TRACE 已覆盖项**不要重复**评
+
+本平台已经跑过 TRACE 5 维评测(各 0-20):
+- **T · 信任性** — 安全风险 / prompt 注入 / 外链信任度
+- **R · 可靠性** — 步骤幂等 / 错误处理 / 边界 case
+- **A · 适用性** — 触发场景清晰度 / 「何时不用」边界(粗粒度)
+- **C · 规范性** — frontmatter 完整 / 目录结构(粗粒度)
+- **E · 有效性** — 步骤可执行 / 有示例(粗粒度)
+
+你的蜂巢评审应聚焦 TRACE **粒度不够 / 完全没看** 的规范细节:
+
+1. **触发场景模拟(TRACE 完全没做)** — 模拟 2-3 条「真实用户口语」请求(不是 description 关键词回灌),判断 ShareClaw 会不会触发本 Skill
+2. **name 字符集细查** — 仅小写英文 + 数字 + 连字符 `-`;不许下划线 / 大写 / 中文 / 空格;长度 ≤ 64
+3. **description 三要素** — ① 做什么(能力说明)② 什么时候用(触发场景,真实用户语,≥ 2 条引号包起来的示例)③ 输入输出形态
+4. **Workflow 动作性** — 每步是命令式 + 有动作 + 有工具(如「调用 sharecrm xxx 查询客户」),不是描述性「了解客户」
+5. **ToolsList 分类** — 有没有 PRIMARY / SUPPORTING / NOT IN SCOPE 三段;CLI 命令而非中文工具名
+6. **references / scripts / assets 调用说明** — 必须明确「什么情况下读哪个文件」;反模式:「参考 references 目录」
+7. **SKILL.md 长度** — ≤ 300 行最佳;300-500 行 ⚠️ 建议拆;> 500 行 ❌
+8. **内容重复** — SKILL.md 与 references/ 之间无大段重复
+9. **Output 章节** — 输出格式 / 文件命名规则 / 必填章节 / 占位符残留处理
+10. **Validation 章节** — 文件生成 / 数据查询类 Skill 必须有
+
+【输出格式】严格按下方 markdown 结构,中文,不要 markdown 代码块包裹整体:
+
+# 🔍 蜂巢 Skill 评审报告
+
+**整体评分**:<S | A | B | C | D>(S 优秀可直接上线 / A 良好少量优化 / B 合格需改进 / C 待重做关键缺失 / D 结构性返工)
+
+**一句话结论**:<最关键的 1 句话总结,不要套话>
+
+---
+
+## 一、关键问题(❌ 必须修复)
+
+若无 ❌ 项,写「✨ 无关键问题,可进入上线流程」。否则按以下格式逐条:
+
+1. ❌ **<问题描述>**
+   - **现状**:`<引用原文>`
+   - **影响**:<具体后果>
+   - **建议**:<可复制粘贴的改写样例>
+
+---
+
+## 二、蜂巢规范专项检查
+
+注:TRACE 已覆盖的(安全 / 幂等 / 触发清晰度 / frontmatter 完整 / 步骤可执行)不重复评,这里只看蜂巢规范特有点。
+
+| 检查项 | 状态 | 说明 |
+|---|---|---|
+| name 字符集合规(小写 / 数字 / `-`) | ✅/⚠️/❌ | <一句话> |
+| description 三要素齐全(能力 + 场景 + 输入输出) | ✅/⚠️/❌ | <一句话> |
+| description 含真实用户语示例 ≥ 2 条 | ✅/⚠️/❌ | <一句话> |
+| Workflow 动作命令式(非描述性) | ✅/⚠️/❌ | <一句话> |
+| ToolsList 分 PRIMARY / NOT IN SCOPE | ✅/⚠️/❌ | <一句话> |
+| references 调用说明明确(何时读哪个) | ✅/⚠️/❌ | <一句话> |
+| scripts 调用说明明确(时机 / 参数 / 输出) | ✅/⚠️/❌ | <一句话或「无 scripts/ 跳过」> |
+| SKILL.md 长度 ≤ 300 行 | ✅/⚠️/❌ | <实际行数> |
+| 与 references 无大段重复 | ✅/⚠️/❌ | <一句话> |
+| Output 格式 / 命名规则定义 | ✅/⚠️/❌ | <一句话> |
+| 占位符残留处理(Validation 提到) | ✅/⚠️/❌ | <一句话> |
+| Validation 校验章节存在 | ✅/⚠️/❌ | <一句话> |
+
+---
+
+## 三、触发场景模拟
+
+构造 2-3 条**真实用户口语**(不要照搬 description 关键词),逐条判断是否会触发本 Skill:
+
+| # | 模拟用户请求 | 预期 | 判断 | 原因 |
+|---|---|---|---|---|
+| 1 | "<真实口语>" | ✅ 触发 | ✅ 命中 / ❌ miss | <description 是否能覆盖此表达> |
+| 2 | "<真实口语>" | ✅ 触发 | ✅/❌ | <原因> |
+| 3 | "<边界口语 或 不应触发>" | ❌ 不触发 / ✅ 触发 | ✅/❌ | <原因> |
+
+**触发率**:<X/Y 命中>。<对 description 触发鲁棒性的整体判断,1-2 句>
+
+---
+
+## 四、改进建议(按优先级)
+
+### 🔴 P0 必须改
+若无,写「(无)」。否则:
+
+**4.1 <主题>**
+> 现状:`<原文>`
+>
+> 建议改为:`<改写后文字>`
+>
+> 理由:<为什么>
+
+### 🟡 P1 强烈建议
+(同 P0 格式;无则写「(无)」)
+
+### 🟢 P2 可选优化
+(同 P0 格式;无则写「(无)」)
+
+---
+
+## 五、亮点 ✨
+
+即使整体评分不高,也至少写 1 条值得保留的好做法:
+- ✨ <亮点>
+
+---
+
+## 六、整体结论
+
+3-5 句话:
+1. **能否上线**:现在能 / 改完 P0 能 / 改完 P0+P1 能 / 需要重做
+2. **最大短板**:1 句话
+3. **下一步动作**:建议先做什么
+
+【纪律】
+- 不照搬 TRACE 已经说过的话
+- 每个 ⚠️ / ❌ 必须有现状原文 + 影响 + 具体建议三要素
+- 触发模拟必须用「业务真实口语」,不是「请生成首面策略」这种回灌词
+- 不评分 0-100,只给等级 S/A/B/C/D
+- 不空话:避免「description 太泛」「建议优化」这种万能话
+"""
+
+
+def inspect_skill_beehive(storage_path: str, **_ignore) -> dict:
+    """蜂巢规范评审,输出结构化中文 markdown。
+
+    与 TRACE 评测共用 LLM 调用底层,但 prompt 不同 → 不重复 TRACE 已覆盖项。
+    返回:
+      {markdown, score, verdict, summary, dimensions, suggestions, clues, llm_model, duration_ms}
+      score 与 verdict 是从 markdown 顶部 S/A/B/C/D 等级解析出来的(为兼容现有 QualityReport schema)。
+    """
+    t0 = time.time()
+    clues = collect_clues(storage_path)
+
+    if not settings.llm_api_key:
+        return {
+            "markdown": "未配置 LLM API key,无法生成蜂巢评审报告。请联系管理员配置 SKILLHUB_LLM_API_KEY。",
+            "score": 0,
+            "verdict": "fail",
+            "summary": "未配置 LLM",
+            "dimensions": {},
+            "suggestions": [],
+            "clues": clues,
+            "llm_model": None,
+            "duration_ms": int((time.time() - t0) * 1000),
+        }
+
+    snapshot = _gather_snapshot(storage_path)
+    clues_brief = _format_clues_for_prompt(clues)
+    skill_md_lines = 0
+    base = skill_dir(storage_path)
+    sm = base / "SKILL.md"
+    if sm.is_file():
+        try:
+            skill_md_lines = len(sm.read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            pass
+
+    user_prompt = f"""请按蜂巢规范评审以下 Skill。**TRACE 已经评过安全 / 可靠性 / 触发清晰度 / frontmatter 完整 / 可执行性,这些不要重复评,聚焦蜂巢规范特有的细节**。
+
+【静态线索】
+{clues_brief}
+- SKILL.md 行数: {skill_md_lines}
+
+【Skill 全文快照】
+{snapshot}
+
+请严格按 system 中的 markdown 模板输出,**直接输出 markdown 报告本身,不要包在 ```markdown 代码块里,不要加任何前置说明文字**。
+"""
+
+    raw_text = ""
+    last_err: Optional[Exception] = None
+    for attempt in range(2):
+        try:
+            text = _call_llm_text(BEEHIVE_SYSTEM_PROMPT, user_prompt)
+            if text and len(text) > 100:
+                raw_text = text
+                break
+        except httpx.HTTPError as e:
+            last_err = e
+            continue
+
+    if not raw_text:
+        msg = f"LLM 调用失败:{type(last_err).__name__}: {last_err}" if last_err else "LLM 返回为空"
+        return {
+            "markdown": f"## 蜂巢评审失败\n\n{msg}\n\n请稍后重试或联系管理员。",
+            "score": 0,
+            "verdict": "fail",
+            "summary": msg,
+            "dimensions": {},
+            "suggestions": [],
+            "clues": clues,
+            "llm_model": settings.llm_model,
+            "duration_ms": int((time.time() - t0) * 1000),
+        }
+
+    # 清掉可能的 ```markdown 围栏 + <think> 标签
+    cleaned = re.sub(r"<think>.*?</think>\s*", "", raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:markdown|md)?\s*\n", "", cleaned)
+        cleaned = re.sub(r"\n```\s*$", "", cleaned)
+
+    # 从「整体评分:S/A/B/C/D」抓出等级 → 映射 score / verdict(便于 UI 排序 / 历史比对)
+    # 兼容 markdown 加粗:**整体评分**: A / 整体评分:**A** / 整体评分:A 等多种写法
+    grade_match = re.search(r"整体评分\**\s*[::]\s*\**\s*([SABCD])\b", cleaned)
+    grade = grade_match.group(1).upper() if grade_match else "B"
+    grade_to_score = {"S": 95, "A": 85, "B": 70, "C": 55, "D": 35}
+    grade_to_verdict = {
+        "S": "excellent", "A": "good", "B": "pass", "C": "needs_work", "D": "fail"
+    }
+    score = grade_to_score.get(grade, 70)
+    verdict = grade_to_verdict.get(grade, "pass")
+
+    # 摘要:抓「一句话结论」那段(同样兼容 ** 加粗)
+    summary_match = re.search(r"一句话结论\**\s*[::]\s*\**\s*(.+?)(?:\n|$)", cleaned)
+    summary = (summary_match.group(1).strip().rstrip("*").strip() if summary_match else f"蜂巢评审等级 {grade}")[:300]
+
+    return {
+        "markdown": cleaned,
+        "score": score,
+        "verdict": verdict,
+        "grade": grade,
+        "summary": summary,
+        "dimensions": {},   # 蜂巢评测不走维度打分制,留空
+        "suggestions": [],
+        "clues": clues,
+        "llm_model": settings.llm_model,
+        "duration_ms": int((time.time() - t0) * 1000),
+    }
+
+
+def _call_llm_text(system_prompt: str, user_prompt: str) -> str:
+    """通用 LLM 文本调用(不强制 JSON 解析)。用于蜂巢评测这类 markdown 输出场景。"""
+    if settings.llm_provider == "anthropic":
+        url = settings.llm_base_url.rstrip("/") + "/v1/messages"
+        headers = {
+            "x-api-key": settings.llm_api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        }
+        body = {
+            "model": settings.llm_model,
+            "max_tokens": 16000,
+            "system": system_prompt,
+            "messages": [{"role": "user", "content": user_prompt}],
+        }
+        with httpx.Client(timeout=settings.llm_timeout) as c:
+            r = c.post(url, headers=headers, json=body)
+            r.raise_for_status()
+            data = r.json()
+        return "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text")
+
+    # openai compatible
+    base = settings.llm_base_url.rstrip("/")
+    if base.endswith("/chat/completions"):
+        url = base
+    elif base.endswith("/v1"):
+        url = base + "/chat/completions"
+    else:
+        url = base + "/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {settings.llm_api_key}",
+        "Content-Type": "application/json",
+    }
+    body = {
+        "model": settings.llm_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.4,
+        "max_tokens": 16000,
+    }
+    with httpx.Client(timeout=settings.llm_timeout) as c:
+        r = c.post(url, headers=headers, json=body)
+        r.raise_for_status()
+        data = r.json()
+    return data["choices"][0]["message"]["content"]
+
+
 def _format_clues_for_prompt(c: dict) -> str:
     lines = []
     lines.append(f"- SKILL.md 存在: {c['has_skill_md']} / frontmatter 完整: {c['frontmatter_complete']}")

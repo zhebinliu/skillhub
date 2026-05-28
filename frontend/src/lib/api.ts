@@ -67,10 +67,12 @@ export interface SkillFile {
 
 export type TraceDim = 'trust' | 'reliability' | 'adaptability' | 'convention' | 'effectiveness';
 
+export type ReportMode = 'trace' | 'beehive';
+
 export interface Report {
   id: string;
-  mode: 'trace';
-  score: number;          // 0-100
+  mode: ReportMode;
+  score: number;          // 0-100(蜂巢:S=95 / A=85 / B=70 / C=55 / D=35,便于历史排序)
   verdict: string;        // excellent | good | pass | needs_work | fail
   summary?: string | null;
   dimensions: Partial<Record<TraceDim, { score: number; comments?: string; label?: string }>>;
@@ -86,9 +88,27 @@ export interface Report {
     external_urls?: string[];
     security_risks?: string[];
   };
+  llm_payload?: { markdown?: string } | null;  // 蜂巢评测原始 markdown
   llm_model?: string | null;
   duration_ms?: number | null;
   created_at: string;
+}
+
+export interface Comment {
+  id: string;
+  skill_id: string;
+  user_id: string;
+  username?: string | null;
+  display_name?: string | null;
+  is_admin?: boolean;
+  content: string;
+  created_at: string;
+}
+
+export interface Reactions {
+  like_count: number;
+  dislike_count: number;
+  my_reaction: 'like' | 'dislike' | null;
 }
 
 export interface InstallInstructions {
@@ -142,7 +162,21 @@ export const skillsApi = {
       text: string | null; base64: string | null;
       size: number; full_size: number; truncated: boolean;
     }>(`/api/skills/${id}/file`, { params: { path } }).then((r) => r.data),
-  reports: (id: string) => api.get<{ items: Report[] }>(`/api/skills/${id}/reports`).then((r) => r.data),
+  reports: (id: string, mode?: ReportMode) =>
+    api.get<{ items: Report[] }>(`/api/skills/${id}/reports`, { params: mode ? { mode } : undefined })
+       .then((r) => r.data),
+  inspectBeehive: (id: string) =>
+    api.post<{ report: Report }>(`/api/skills/${id}/inspect-beehive`).then((r) => r.data),
+  listComments: (id: string) =>
+    api.get<{ items: Comment[] }>(`/api/skills/${id}/comments`).then((r) => r.data),
+  createComment: (id: string, content: string) =>
+    api.post<{ comment: Comment }>(`/api/skills/${id}/comments`, { content }).then((r) => r.data),
+  deleteComment: (id: string, commentId: string) =>
+    api.delete(`/api/skills/${id}/comments/${commentId}`).then((r) => r.data),
+  getReactions: (id: string) =>
+    api.get<Reactions>(`/api/skills/${id}/reactions`).then((r) => r.data),
+  setReaction: (id: string, reaction: 'like' | 'dislike' | null) =>
+    api.post<Reactions>(`/api/skills/${id}/reactions`, { reaction }).then((r) => r.data),
   uploadZip: (file: File, nameHint?: string, version?: string) => {
     const fd = new FormData();
     fd.append('archive', file);

@@ -1,22 +1,26 @@
 import { useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { ArrowLeft, Download, Eye, GaugeCircle, Layers, Package, Settings } from 'lucide-react';
+import { ArrowLeft, Download, Eye, GaugeCircle, Hexagon, Layers, Package, Settings } from 'lucide-react';
 import { skillsApi } from '../lib/api';
 import OverviewTab from '../components/OverviewTab';
 import InstallTab from '../components/InstallTab';
 import VersionsTab from '../components/VersionsTab';
 import ReportTab from '../components/ReportTab';
+import BeehiveTab from '../components/BeehiveTab';
+import ReactionBar from '../components/ReactionBar';
+import CommentsSection from '../components/CommentsSection';
 import { useAuth } from '../lib/auth';
 import { bytes, relTime, skillTitle, verdictMeta } from '../lib/format';
 
-type Tab = 'overview' | 'install' | 'versions' | 'report';
+type Tab = 'overview' | 'install' | 'versions' | 'report' | 'beehive';
 
 const TABS: { key: Tab; icon: any; label: string }[] = [
   { key: 'overview', icon: Layers,       label: '概述' },
   { key: 'install',  icon: Package,      label: '安装方式' },
   { key: 'versions', icon: Download,     label: '版本历史' },
   { key: 'report',   icon: GaugeCircle,  label: '评测报告' },
+  { key: 'beehive',  icon: Hexagon,      label: '蜂巢评测' },
 ];
 
 export default function SkillDetailPage() {
@@ -66,6 +70,7 @@ export default function SkillDetailPage() {
             )}
           </div>
           <div className="flex items-center gap-2 shrink-0">
+            <ReactionBar skillId={s.id} />
             {s.latest_score != null && (
               <div className={`px-3 py-1.5 rounded-full text-sm ring-1 ${v.bg} ${v.color} ${v.ring}`}>
                 <span className="font-mono">{(s.latest_score / 20).toFixed(1)}</span>
@@ -131,7 +136,11 @@ export default function SkillDetailPage() {
         {tab === 'install'  && <InstallTab skillId={s.id} />}
         {tab === 'versions' && <VersionsTab skillId={s.id} />}
         {tab === 'report'   && <ReportTab skillId={s.id} isOwner={isOwner} />}
+        {tab === 'beehive'  && <BeehiveTab skillId={s.id} isOwner={isOwner} />}
       </div>
+
+      {/* 评论区(始终显示在底部,不放进 tab) */}
+      <CommentsSection skillId={s.id} skillOwnerId={s.owner_id} />
     </div>
   );
 }

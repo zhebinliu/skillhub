@@ -16,7 +16,7 @@ from fastapi import (
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import desc, func, or_, select
+from sqlalchemy import case, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from auth import (
@@ -25,8 +25,8 @@ from auth import (
 )
 from config import settings
 from db import Base, SessionLocal, engine, get_session
-from inspector import inspect_skill
-from models import InviteCode, QualityReport, Skill, User
+from inspector import inspect_skill, inspect_skill_beehive
+from models import InviteCode, QualityReport, Skill, SkillComment, SkillReaction, User
 from storage import (
     UploadError, extract_tar, extract_zip, list_tree, new_storage_path,
     read_file, remove_skill, slugify, write_files,
@@ -82,6 +82,27 @@ async def lifespan(app: FastAPI):
             "ALTER TABLE skills ADD COLUMN IF NOT EXISTS inspecting_started_at TIMESTAMP",
             "ALTER TABLE skills ADD COLUMN IF NOT EXISTS display_name VARCHAR(128)",
             "ALTER TABLE skills ADD COLUMN IF NOT EXISTS install_count INTEGER NOT NULL DEFAULT 0",
+            # 1.2 评论 + 点赞(老库无表时按 create_all 已建,这里幂等兜底)
+            """CREATE TABLE IF NOT EXISTS skill_comments (
+                id UUID PRIMARY KEY,
+                skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id),
+                content TEXT NOT NULL,
+                deleted_at TIMESTAMP,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW()
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_skill_comments_skill_id ON skill_comments (skill_id)",
+            "CREATE INDEX IF NOT EXISTS ix_skill_comments_created_at ON skill_comments (created_at)",
+            """CREATE TABLE IF NOT EXISTS skill_reactions (
+                id UUID PRIMARY KEY,
+                skill_id UUID NOT NULL REFERENCES skills(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id),
+                reaction VARCHAR(8) NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+                CONSTRAINT uq_reactions_skill_user UNIQUE (skill_id, user_id)
+            )""",
+            "CREATE INDEX IF NOT EXISTS ix_skill_reactions_skill_id ON skill_reactions (skill_id)",
         ):
             await conn.exec_driver_sql(stmt)
     try:
@@ -380,6 +401,7 @@ async def list_reports(
     skill_id: uuid.UUID,
     db: Annotated[AsyncSession, Depends(get_session)],
     viewer: Annotated[Optional[User], Depends(get_optional_user)],
+    mode: Optional[str] = Query(None, description="按模式过滤:trace / beehive,空则全部"),
 ):
     s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
     if not s:
@@ -388,9 +410,10 @@ async def list_reports(
         is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
         if not is_owner:
             raise HTTPException(404, "skill 不存在")
-    rows = (await db.execute(
-        select(QualityReport).where(QualityReport.skill_id == skill_id).order_by(desc(QualityReport.created_at)).limit(20)
-    )).scalars().all()
+    stmt = select(QualityReport).where(QualityReport.skill_id == skill_id)
+    if mode:
+        stmt = stmt.where(QualityReport.mode == mode)
+    rows = (await db.execute(stmt.order_by(desc(QualityReport.created_at)).limit(20))).scalars().all()
     return {"items": [_report_dict(r) for r in rows]}
 
 
@@ -933,13 +956,14 @@ async def delete_skill(
 def _report_dict(rpt: QualityReport) -> dict:
     return {
         "id": str(rpt.id),
-        "mode": "trace",
+        "mode": rpt.mode or "trace",
         "score": rpt.score,
         "verdict": rpt.verdict,
         "summary": rpt.summary,
         "dimensions": rpt.dimensions,
         "suggestions": rpt.suggestions,
         "clues": (rpt.static_payload or {}),  # 复用 static_payload 字段存 clues
+        "llm_payload": rpt.llm_payload,        # beehive 模式下放 markdown 等附加 payload
         "llm_model": rpt.llm_model,
         "duration_ms": rpt.duration_ms,
         "created_at": _iso(rpt.created_at),
@@ -1196,3 +1220,209 @@ async def admin_delete_user(
     await db.delete(u)
     await db.commit()
     return {"ok": True}
+
+
+# ── skill 评论 + 点赞 / 踩 ────────────────────────────────────────────────────
+class CommentIn(BaseModel):
+    content: str = Field(min_length=1, max_length=2000)
+
+
+class ReactionIn(BaseModel):
+    reaction: Optional[str] = Field(None, description="like / dislike / null(取消)")
+
+
+def _comment_dict(c: SkillComment, user: Optional[User]) -> dict:
+    return {
+        "id": str(c.id),
+        "skill_id": str(c.skill_id),
+        "user_id": str(c.user_id),
+        "username": user.username if user else None,
+        "display_name": user.display_name if user else None,
+        "is_admin": user.is_admin if user else False,
+        "content": c.content,
+        "created_at": _iso(c.created_at),
+    }
+
+
+async def _ensure_skill_visible(db: AsyncSession, skill_id: uuid.UUID, viewer: Optional[User]) -> Skill:
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if not s.is_published:
+        is_owner = viewer and (viewer.id == s.owner_id or viewer.is_admin)
+        if not is_owner:
+            raise HTTPException(404, "skill 不存在")
+    return s
+
+
+@app.get("/api/skills/{skill_id}/comments")
+async def list_comments(
+    skill_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    viewer: Annotated[Optional[User], Depends(get_optional_user)],
+):
+    """公开读。未登录也能看,但要发评论得登录。"""
+    await _ensure_skill_visible(db, skill_id, viewer)
+    rows = (await db.execute(
+        select(SkillComment)
+        .where(SkillComment.skill_id == skill_id, SkillComment.deleted_at.is_(None))
+        .order_by(desc(SkillComment.created_at))
+        .limit(200)
+    )).scalars().all()
+    user_ids = {r.user_id for r in rows}
+    users = {}
+    if user_ids:
+        users = {u.id: u for u in (await db.execute(select(User).where(User.id.in_(user_ids)))).scalars().all()}
+    return {"items": [_comment_dict(r, users.get(r.user_id)) for r in rows]}
+
+
+@app.post("/api/skills/{skill_id}/comments")
+async def create_comment(
+    skill_id: uuid.UUID,
+    body: CommentIn,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+):
+    await _ensure_skill_visible(db, skill_id, user)
+    content = body.content.strip()
+    if not content:
+        raise HTTPException(400, "评论内容不能为空")
+    c = SkillComment(skill_id=skill_id, user_id=user.id, content=content)
+    db.add(c)
+    await db.commit()
+    await db.refresh(c)
+    return {"comment": _comment_dict(c, user)}
+
+
+@app.delete("/api/skills/{skill_id}/comments/{comment_id}")
+async def delete_comment(
+    skill_id: uuid.UUID,
+    comment_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+):
+    """评论作者 / skill owner / admin 可删。软删,保留审计。"""
+    c = (await db.execute(
+        select(SkillComment).where(SkillComment.id == comment_id, SkillComment.skill_id == skill_id)
+    )).scalar_one_or_none()
+    if not c or c.deleted_at is not None:
+        raise HTTPException(404, "评论不存在")
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    is_skill_owner = s and (s.owner_id == user.id)
+    if c.user_id != user.id and not user.is_admin and not is_skill_owner:
+        raise HTTPException(403, "无权限删除该评论")
+    c.deleted_at = datetime.utcnow()
+    await db.commit()
+    return {"ok": True}
+
+
+async def _reaction_counts(db: AsyncSession, skill_id: uuid.UUID) -> tuple[int, int]:
+    row = (await db.execute(
+        select(
+            func.sum(case((SkillReaction.reaction == "like", 1), else_=0)),
+            func.sum(case((SkillReaction.reaction == "dislike", 1), else_=0)),
+        ).where(SkillReaction.skill_id == skill_id)
+    )).one()
+    return int(row[0] or 0), int(row[1] or 0)
+
+
+@app.get("/api/skills/{skill_id}/reactions")
+async def get_reactions(
+    skill_id: uuid.UUID,
+    db: Annotated[AsyncSession, Depends(get_session)],
+    viewer: Annotated[Optional[User], Depends(get_optional_user)],
+):
+    """公开读。返回 like/dislike 总数 + 当前用户的 reaction(未登录则 null)。"""
+    await _ensure_skill_visible(db, skill_id, viewer)
+    like_count, dislike_count = await _reaction_counts(db, skill_id)
+    my_reaction = None
+    if viewer:
+        r = (await db.execute(
+            select(SkillReaction).where(
+                SkillReaction.skill_id == skill_id, SkillReaction.user_id == viewer.id
+            )
+        )).scalar_one_or_none()
+        if r:
+            my_reaction = r.reaction
+    return {"like_count": like_count, "dislike_count": dislike_count, "my_reaction": my_reaction}
+
+
+@app.post("/api/skills/{skill_id}/reactions")
+async def set_reaction(
+    skill_id: uuid.UUID,
+    body: ReactionIn,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+):
+    """一个用户对一个 skill 最多一条 reaction。
+    - body.reaction = "like" / "dislike" → upsert
+    - body.reaction = null / "" → 取消现有 reaction
+    再次提交同样的 reaction 也视为取消(切换)。
+    """
+    await _ensure_skill_visible(db, skill_id, user)
+    new_val = (body.reaction or "").strip().lower() or None
+    if new_val and new_val not in ("like", "dislike"):
+        raise HTTPException(400, "reaction 仅支持 like / dislike / null")
+
+    existing = (await db.execute(
+        select(SkillReaction).where(
+            SkillReaction.skill_id == skill_id, SkillReaction.user_id == user.id
+        )
+    )).scalar_one_or_none()
+
+    if new_val is None:
+        if existing:
+            await db.delete(existing)
+    elif existing is None:
+        db.add(SkillReaction(skill_id=skill_id, user_id=user.id, reaction=new_val))
+    elif existing.reaction == new_val:
+        # 同 reaction 再点 = 取消
+        await db.delete(existing)
+        new_val = None
+    else:
+        existing.reaction = new_val
+        existing.updated_at = datetime.utcnow()
+
+    await db.commit()
+    like_count, dislike_count = await _reaction_counts(db, skill_id)
+    return {"like_count": like_count, "dislike_count": dislike_count, "my_reaction": new_val}
+
+
+# ── 蜂巢评测(独立模式,补 TRACE 没覆盖的规范层面) ───────────────────────────
+@app.post("/api/skills/{skill_id}/inspect-beehive")
+async def run_inspect_beehive(
+    skill_id: uuid.UUID,
+    user: Annotated[User, Depends(get_current_user)],
+    db: Annotated[AsyncSession, Depends(get_session)],
+):
+    """蜂巢规范评审(Markdown 结构化报告)。
+
+    与 TRACE 互补:TRACE 看安全 / 可靠 / 触发 / 规范 / 效果(打分制);
+    蜂巢评审专攻规范细节(name 字符集 / description 三要素 / Workflow 动作性 /
+    references 调用说明 / Validation / 占位符 / 触发场景模拟),不重复 TRACE 项。
+    """
+    s = (await db.execute(select(Skill).where(Skill.id == skill_id))).scalar_one_or_none()
+    if not s:
+        raise HTTPException(404, "skill 不存在")
+    if s.owner_id != user.id and not user.is_admin:
+        raise HTTPException(403, "无权限")
+
+    result = await asyncio.to_thread(inspect_skill_beehive, s.storage_path)
+
+    rpt = QualityReport(
+        skill_id=s.id,
+        mode="beehive",
+        score=result.get("score", 0),
+        verdict=result.get("verdict", "pass"),
+        dimensions=result.get("dimensions") or {},
+        suggestions=result.get("suggestions") or [],
+        summary=result.get("summary"),
+        static_payload=result.get("clues"),
+        llm_payload={"markdown": result.get("markdown", "")},  # 完整 markdown 报告
+        llm_model=result.get("llm_model"),
+        duration_ms=result.get("duration_ms"),
+    )
+    db.add(rpt)
+    await db.commit()
+    await db.refresh(rpt)
+    return {"report": _report_dict(rpt)}

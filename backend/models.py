@@ -89,7 +89,7 @@ class QualityReport(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=_uuid)
     skill_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("skills.id"), nullable=False, index=True)
-    mode: Mapped[str] = mapped_column(String(16), default="both", nullable=False, index=True)  # static | llm | both
+    mode: Mapped[str] = mapped_column(String(16), default="both", nullable=False, index=True)  # trace | beehive | static | llm | both
     score: Mapped[int] = mapped_column(Integer, nullable=False)
     verdict: Mapped[str] = mapped_column(String(32), nullable=False)
     dimensions: Mapped[dict] = mapped_column(JSON, nullable=False)
@@ -100,3 +100,35 @@ class QualityReport(Base):
     llm_model: Mapped[str | None] = mapped_column(String(128))
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+
+
+class SkillComment(Base):
+    """用户对 skill 的评论。软删(deleted_at)保留审计痕迹。"""
+    __tablename__ = "skill_comments"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=_uuid)
+    skill_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False, index=True)
+
+
+class SkillReaction(Base):
+    """点赞 / 踩 二选一。同一用户同一 skill 只能有一条;切换或取消通过 upsert / delete。"""
+    __tablename__ = "skill_reactions"
+
+    id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, default=_uuid)
+    skill_id: Mapped[uuid.UUID] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("skills.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    reaction: Mapped[str] = mapped_column(String(8), nullable=False)  # like | dislike
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=_now, onupdate=_now, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("skill_id", "user_id", name="uq_reactions_skill_user"),
+    )

@@ -6,8 +6,8 @@ import { relTime } from '../lib/format';
 
 export default function ReportTab({ skillId, isOwner }: { skillId: string; isOwner: boolean }) {
   const { data, isLoading } = useQuery({
-    queryKey: ['reports', skillId],
-    queryFn: () => skillsApi.reports(skillId),
+    queryKey: ['reports', skillId, 'trace'],
+    queryFn: () => skillsApi.reports(skillId, 'trace'),
   });
 
   if (isLoading) return <div className="text-zinc-500 text-sm">加载中…</div>;
